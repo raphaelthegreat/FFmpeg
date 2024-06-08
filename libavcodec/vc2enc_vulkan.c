@@ -19,14 +19,19 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "libavutil/avassert.h"
 #include "libavutil/mem.h"
 #include "libavutil/pixdesc.h"
 #include "libavutil/opt.h"
 #include "libavutil/version.h"
+#include "libavfilter/vulkan_spirv.h"
 #include "codec_internal.h"
+#include "internal.h"
 #include "encode.h"
 #include "version.h"
 #include "vc2enc_common.h"
+#include "vulkan.h"
+#include "hwconfig.h"
 
 /*
  * Transform basics for a 3 level transform
@@ -128,7 +133,7 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
     int i, ret;
     int64_t max_frame_bytes;
 
-    /* Threaded DWT transform */
+     /* Threaded DWT transform */
     for (i = 0; i < 3; i++) {
         s->transform_args[i].ctx   = s;
         s->transform_args[i].field = field;
@@ -213,14 +218,15 @@ static av_cold int vc2_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
     if (s->slice_min_bytes < 0)
         return AVERROR(EINVAL);
 
-    ret = encode_frame(s, avpkt, frame, aux_data, header_size, s->interlaced);
+    printf("AVFrame format: %d\n", frame->format);
+    /*ret = encode_frame(s, avpkt, frame, aux_data, header_size, s->interlaced);
     if (ret)
         return ret;
     if (s->interlaced) {
         ret = encode_frame(s, avpkt, frame, aux_data, header_size, 2);
         if (ret)
             return ret;
-    }
+    }*/
 
     flush_put_bits(&s->pb);
     av_shrink_packet(avpkt, put_bytes_output(&s->pb));
@@ -255,6 +261,10 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
     const AVPixFmtDescriptor *fmt = av_pix_fmt_desc_get(avctx->pix_fmt);
     const int depth = fmt->comp[0].depth;
     VC2EncContext *s = avctx->priv_data;
+    FFVulkanContext *vkctx = &s->vkctx;
+    FFVkSPIRVShader *shd;
+    FFVkSPIRVCompiler *spv;
+    FFVulkanDescriptorSetBinding *desc;
 
     s->picture_number = 0;
 
@@ -410,6 +420,19 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
         }
     }
 
+    /*ff_vk_qf_init(vkctx, &s->qf, VK_QUEUE_COMPUTE_BIT);
+    ff_vk_exec_pool_init(vkctx, &s->qf, &s->e, s->qf.nb_queues * 4, 0, 0, 0, NULL);
+    ff_vk_shader_init(&s->pl, &s->shd, "avgblur_compute", VK_SHADER_STAGE_COMPUTE_BIT, 0);
+    shd = &s->shd;
+
+    ff_vk_shader_set_compute_sizes(shd, 8, 8, 1);
+
+    ff_vk_add_push_constant(&s->pl, 0, sizeof(s->consts),
+                            VK_SHADER_STAGE_COMPUTE_BIT);
+
+    ff_vk_init_compute_pipeline(vkctx, &s->pl, &s->shd);
+    ff_vk_exec_pipeline_register(vkctx, &s->e, &s->pl);*/
+
     return 0;
 }
 
@@ -432,7 +455,7 @@ static const AVOption vc2enc_options[] = {
 };
 
 static const AVClass vc2enc_class = {
-    .class_name = "SMPTE VC-2 encoder",
+    .class_name = "vc2_vulkan_encoder",
     .category = AV_CLASS_CATEGORY_ENCODER,
     .option = vc2enc_options,
     .item_name = av_default_item_name,
@@ -444,20 +467,18 @@ static const FFCodecDefault vc2enc_defaults[] = {
     { NULL },
 };
 
-static const enum AVPixelFormat allowed_pix_fmts[] = {
-    AV_PIX_FMT_YUV420P,   AV_PIX_FMT_YUV422P,   AV_PIX_FMT_YUV444P,
-    AV_PIX_FMT_YUV420P10, AV_PIX_FMT_YUV422P10, AV_PIX_FMT_YUV444P10,
-    AV_PIX_FMT_YUV420P12, AV_PIX_FMT_YUV422P12, AV_PIX_FMT_YUV444P12,
-    AV_PIX_FMT_NONE
+const AVCodecHWConfigInternal *const ff_vc2_hw_configs[] = {
+    HW_CONFIG_ENCODER_FRAMES(VULKAN, VULKAN),
+    HW_CONFIG_ENCODER_DEVICE(NONE,  VULKAN),
+    NULL,
 };
 
-const FFCodec ff_vc2_encoder = {
-    .p.name         = "vc2",
+const FFCodec ff_vc2_vulkan_encoder = {
+    .p.name         = "vc2_vulkan",
     CODEC_LONG_NAME("SMPTE VC-2"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_DIRAC,
-    .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_SLICE_THREADS |
-                      AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
+    .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_HARDWARE,
     .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
     .priv_data_size = sizeof(VC2EncContext),
     .init           = vc2_encode_init,
@@ -465,5 +486,9 @@ const FFCodec ff_vc2_encoder = {
     FF_CODEC_ENCODE_CB(vc2_encode_frame),
     .p.priv_class   = &vc2enc_class,
     .defaults       = vc2enc_defaults,
-    .p.pix_fmts     = allowed_pix_fmts
+    .p.pix_fmts = (const enum AVPixelFormat[]) {
+        AV_PIX_FMT_VULKAN,
+        AV_PIX_FMT_NONE,
+    },
+    .hw_configs     = ff_vc2_hw_configs,
 };
