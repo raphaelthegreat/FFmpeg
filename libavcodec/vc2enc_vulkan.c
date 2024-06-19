@@ -420,7 +420,13 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
         }
     }
 
-    /*ff_vk_qf_init(vkctx, &s->qf, VK_QUEUE_COMPUTE_BIT);
+    spv = ff_vk_spirv_init();
+    if (!spv) {
+        av_log(avctx, AV_LOG_ERROR, "Unable to initialize SPIR-V compiler!\n");
+        return AVERROR_EXTERNAL;
+    }
+
+    ff_vk_qf_init(vkctx, &s->qf, VK_QUEUE_COMPUTE_BIT);
     ff_vk_exec_pool_init(vkctx, &s->qf, &s->e, s->qf.nb_queues * 4, 0, 0, 0, NULL);
     ff_vk_shader_init(&s->pl, &s->shd, "avgblur_compute", VK_SHADER_STAGE_COMPUTE_BIT, 0);
     shd = &s->shd;
@@ -431,7 +437,7 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
                             VK_SHADER_STAGE_COMPUTE_BIT);
 
     ff_vk_init_compute_pipeline(vkctx, &s->pl, &s->shd);
-    ff_vk_exec_pipeline_register(vkctx, &s->e, &s->pl);*/
+    ff_vk_exec_pipeline_register(vkctx, &s->e, &s->pl);
 
     return 0;
 }

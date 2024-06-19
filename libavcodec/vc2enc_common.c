@@ -404,6 +404,7 @@ static int count_hq_slice(SliceArgs *slice, int quant_idx)
     bits += 8*s->prefix_bytes;
     bits += 8; /* quant_idx */
 
+    // slice_quantizers
     for (level = 0; level < s->wavelet_depth; level++)
         for (orientation = !!level; orientation < 4; orientation++)
             quants[level][orientation] = FFMAX(quant_idx - s->quant[level][orientation], 0);
