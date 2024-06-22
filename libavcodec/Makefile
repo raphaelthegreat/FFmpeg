@@ -1363,3 +1363,9 @@ $(SUBDIR)pcm.o: $(SUBDIR)pcm_tables.h
 $(SUBDIR)qdm2.o: $(SUBDIR)qdm2_tables.h
 $(SUBDIR)sinewin.o: $(SUBDIR)sinewin_tables.h
 endif
+
+VULKAN = $(subst $(SRC_PATH)/,,$(wildcard $(SRC_PATH)/libavcodec/vulkan/*.comp))
+.SECONDARY: $(VULKAN:.comp=.c)
+libavcodec/vulkan/%.c: TAG = OPENCL
+libavcodec/vulkan/%.c: $(SRC_PATH)/libavcodec/vulkan/%.comp
+	$(M)$(SRC_PATH)/tools/source2c $< $@

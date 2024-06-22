@@ -127,29 +127,62 @@ static int dwt_plane(AVCodecContext *avctx, void *arg)
     return 0;
 }
 
+int vulkan_encode_slices(VC2EncContext *s)
+{
+    uint8_t *buf;
+    int slice_x, slice_y, skip = 0;
+    SliceArgs *enc_args = s->slice_args;
+
+    flush_put_bits(&s->pb);
+    buf = put_bits_ptr(&s->pb);
+
+    for (slice_y = 0; slice_y < s->num_y; slice_y++) {
+        for (slice_x = 0; slice_x < s->num_x; slice_x++) {
+            SliceArgs *args = &enc_args[s->num_x*slice_y + slice_x];
+            init_put_bits(&args->pb, buf + skip, args->bytes+s->prefix_bytes);
+            skip += args->bytes;
+        }
+    }
+
+    ff_vk_exec_start(vkctx, exec);
+    ff_vk_exec_bind_pipeline(vkctx, exec, &dec->quant_pl);
+
+    // Dispatch.
+    //s->avctx->execute(s->avctx, encode_hq_slice, enc_args, NULL, s->num_x*s->num_y,
+    //                  sizeof(SliceArgs));
+
+    skip_put_bytes(&s->pb, skip);
+
+    return 0;
+}
+
 static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
                         const char *aux_data, const int header_size, int field)
 {
     int i, ret;
     int64_t max_frame_bytes;
-
-     /* Threaded DWT transform */
-    for (i = 0; i < 3; i++) {
-        s->transform_args[i].ctx   = s;
-        s->transform_args[i].field = field;
-        s->transform_args[i].plane = &s->plane[i];
-        s->transform_args[i].idata = frame->data[i];
-        s->transform_args[i].istride = frame->linesize[i];
-    }
-    s->avctx->execute(s->avctx, dwt_plane, s->transform_args, NULL, 3,
-                      sizeof(TransformArgs));
+    AVBufferRef *avpkt_buf = NULL;
+    FFVkBuffer* buf_vk = NULL;
+    FFVulkanContext *vkctx = &s->vkctx;
+    FFVulkanFunctions *vk = &vkctx->vkfn;
 
     /* Calculate per-slice quantizers and sizes */
     max_frame_bytes = header_size + calc_slice_sizes(s);
 
+    /* Get a pooled device local host visible buffer for writing output data */
     if (field < 2) {
-        ret = ff_get_encode_buffer(s->avctx, avpkt,
-                                   max_frame_bytes << s->interlaced, 0);
+        ret = ff_vk_get_pooled_buffer(vkctx, &vkctx->dwt_buf_pool, &avpkt_buf,
+                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
+                                      max_frame_bytes << s->interlaced,
+                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                          VK_MEMORY_PROPERTY_HOST_VISIBLE);
+        avpkt->buf = avpkt_buf;
+        avpkt->data = avpkt_buf->data;
+        avpkt->size = max_frame_bytes << s->interlaced;
+        buf_vk = (FFVkBuffer *)avpkt_buf->data;
+        s->consts.dst_buf = buf_vk->address;
+
         if (ret) {
             av_log(s->avctx, AV_LOG_ERROR, "Error getting output packet.\n");
             return ret;
@@ -172,7 +205,7 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
     encode_picture_start(s);
 
     /* Encode slices */
-    encode_slices(s);
+    vulkan_encode_slices(s);
 
     /* End sequence */
     encode_parse_info(s, DIRAC_PCODE_END_SEQ);
@@ -181,7 +214,7 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
 }
 
 static av_cold int vc2_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
-                                      const AVFrame *frame, int *got_packet)
+                                    const AVFrame *frame, int *got_packet)
 {
     int ret = 0;
     int slice_ceil, sig_size = 256;
@@ -191,6 +224,13 @@ static av_cold int vc2_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
     const int aux_data_size = bitexact ? sizeof("Lavc") : sizeof(LIBAVCODEC_IDENT);
     const int header_size = 100 + aux_data_size;
     int64_t r_bitrate = avctx->bit_rate >> (s->interlaced);
+    FFVulkanContext *vkctx = &s->vkctx;
+    FFVulkanFunctions *vk = &vkctx->vkfn;
+    FFVkExecContext *exec = ff_vk_exec_get(&s->e);
+
+    /* Create an image view for each plane of source YUV420 frame */
+    VkImageView views[AV_NUM_DATA_POINTERS];
+    ff_vk_create_imageviews(&s->vkctx, exec, views, frame);
 
     s->avctx = avctx;
     s->size_scaler = 2;
@@ -218,15 +258,14 @@ static av_cold int vc2_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
     if (s->slice_min_bytes < 0)
         return AVERROR(EINVAL);
 
-    printf("AVFrame format: %d\n", frame->format);
-    /*ret = encode_frame(s, avpkt, frame, aux_data, header_size, s->interlaced);
+    ret = encode_frame(s, avpkt, frame, aux_data, header_size, s->interlaced);
     if (ret)
         return ret;
     if (s->interlaced) {
         ret = encode_frame(s, avpkt, frame, aux_data, header_size, 2);
         if (ret)
             return ret;
-    }*/
+    }
 
     flush_put_bits(&s->pb);
     av_shrink_packet(avpkt, put_bytes_output(&s->pb));
@@ -265,6 +304,7 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
     FFVkSPIRVShader *shd;
     FFVkSPIRVCompiler *spv;
     FFVulkanDescriptorSetBinding *desc;
+    AVBufferRef* dwt_buf = NULL;
 
     s->picture_number = 0;
 
@@ -420,6 +460,7 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
         }
     }
 
+    /* Initialize spirv compiler */
     spv = ff_vk_spirv_init();
     if (!spv) {
         av_log(avctx, AV_LOG_ERROR, "Unable to initialize SPIR-V compiler!\n");
@@ -428,16 +469,26 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
 
     ff_vk_qf_init(vkctx, &s->qf, VK_QUEUE_COMPUTE_BIT);
     ff_vk_exec_pool_init(vkctx, &s->qf, &s->e, s->qf.nb_queues * 4, 0, 0, 0, NULL);
-    ff_vk_shader_init(&s->pl, &s->shd, "avgblur_compute", VK_SHADER_STAGE_COMPUTE_BIT, 0);
+    ff_vk_shader_init(&s->pl, &s->shd, "haar_dwt", VK_SHADER_STAGE_COMPUTE_BIT, 0);
     shd = &s->shd;
 
+    desc = (FFVulkanDescriptorSetBinding[])
+    {
+        {
+            .name = "texture",
+            .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .mem_layout = "std430",
+            .dimensions = 2,
+            .elems = 3,
+            .stages = VK_SHADER_STAGE_COMPUTE_BIT,
+        },
+    };
+    RET(ff_vk_pipeline_descriptor_set_add(vkctx, pl, shd, desc, 1, 0, 0));
     ff_vk_shader_set_compute_sizes(shd, 8, 8, 1);
 
-    ff_vk_add_push_constant(&s->pl, 0, sizeof(s->consts),
-                            VK_SHADER_STAGE_COMPUTE_BIT);
-
-    ff_vk_init_compute_pipeline(vkctx, &s->pl, &s->shd);
-    ff_vk_exec_pipeline_register(vkctx, &s->e, &s->pl);
+    /* Initialize Haar compute pipeline */
+    RET(ff_vk_init_compute_pipeline(vkctx, &s->pl, &s->shd));
+    RET(ff_vk_exec_pipeline_register(vkctx, &s->e, &s->pl));
 
     return 0;
 }

@@ -187,12 +187,13 @@ typedef struct VC2EncContext {
 
     FFVulkanPipeline pl;
     FFVkSPIRVShader shd;
-  
+    AVBufferPool* dwt_buf_pool;
+
     struct {
-        uint32_t width;
-        uint32_t height;
-        uint32_t stride;
-        uint32_t shift;
+        int levels;
+        int slice_dim;
+        int quant_index;
+        VkDeviceAddress dst_buf;
     } consts;
 } VC2EncContext;
 

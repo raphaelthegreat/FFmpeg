@@ -1,0 +1,215 @@
+#version 450 core
+#extension GL_EXT_buffer_reference : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout (set = 0, binding = 0, rgba8) uniform uimage2D planes[3];
+layout (set = 0, binding = 1) buffer DestBuffer {
+    uint data[];
+};
+
+layout(push_constant, std140) uniform ComputeInfo {
+    int wavelet_depth;
+    int slice_dim;
+    int quant_idx;
+    ivec2 num_slices;
+};
+
+#define MAX_DWT_LEVELS 4
+
+const uint ff_dirac_default_qmat[7][4][4] = uint[7][4][4](
+    uint[7][4](uint[4](5,  3,  3,  0), uint[4](0,  4,  4,  1), uint[4](0,  5,  5,  2), uint[4](0,  6,  6,  3)),
+    uint[7][4](uint[4](4,  2,  2,  0), uint[4](0,  4,  4,  2), uint[4](0,  5,  5,  3), uint[4](0,  7,  7,  5)),
+    uint[7][4](uint[4](5,  3,  3,  0), uint[4](0,  4,  4,  1), uint[4](0,  5,  5,  2), uint[4](0,  6,  6,  3)),
+    uint[7][4](uint[4](8,  4,  4,  0), uint[4](0,  4,  4,  0), uint[4](0,  4,  4,  0), uint[4](0,  4,  4,  0)),
+    uint[7][4](uint[4](8,  4,  4,  0), uint[4](0,  4,  4,  0), uint[4](0,  4,  4,  0), uint[4](0,  4,  4,  0)),
+    uint[7][4](uint[4](0,  4,  4,  8), uint[4](0,  8,  8, 12), uint[4](0, 13, 13, 17), uint[4](0, 17, 17, 21)),
+    uint[7][4](uint[4](3,  1,  1,  0), uint[4](0,  4,  4,  2), uint[4](0,  6,  6,  5), uint[4](0,  9,  9,  7))
+);
+
+const int ff_dirac_qscale_tab[116] = int[116](
+    4,         5,         6,         7,         8,        10,        11,        13,
+    16,        19,        23,        27,        32,        38,        45,        54,
+    64,        76,        91,       108,       128,       152,       181,       215,
+    256,       304,       362,       431,       512,       609,       724,       861,
+    1024,      1218,      1448,      1722,      2048,      2435,      2896,      3444,
+    4096,      4871,      5793,      6889,      8192,      9742,     11585,     13777,
+    16384,     19484,     23170,     27554,     32768,     38968,     46341,     55109,
+    65536,     77936,     92682,    110218,    131072,    155872,    185364,    220436,
+    262144,    311744,    370728,    440872,    524288,    623487,    741455,    881744,
+    1048576,   1246974,   1482910,   1763488,   2097152,   2493948,   2965821,   3526975,
+    4194304,   4987896,   5931642,   7053950,   8388608,   9975792,  11863283,  14107901,
+    16777216,  19951585,  23726566,  28215802,  33554432,  39903169,  47453133,  56431603,
+    67108864,  79806339,  94906266, 112863206, 134217728, 159612677, 189812531, 225726413,
+    268435456, 319225354, 379625062, 451452825, 536870912, 638450708, 759250125, 902905651,
+    1073741824,1276901417,1518500250,1805811301, 0, 0, 0, 0, 0/*2147483648,2553802834,3037000500,3611622603,
+    4294967296*/
+);
+
+uint quant[MAX_DWT_LEVELS][4];
+
+void init_quant_matrix() {
+    int wavelet_idx = 3; // VC2_TRANSFORM_HAAR
+    for (int level = 0; level < wavelet_depth; level++) {
+        quant[level][0] = ff_dirac_default_qmat[wavelet_idx][level][0];
+        quant[level][1] = ff_dirac_default_qmat[wavelet_idx][level][1];
+        quant[level][2] = ff_dirac_default_qmat[wavelet_idx][level][2];
+        quant[level][3] = ff_dirac_default_qmat[wavelet_idx][level][3];
+    }
+
+    /* Slice quantization (slice_quantizers() in the specs) */
+    for (int level = 0; level < wavelet_depth; level++)
+        for (int orientation = !!level; orientation < 4; orientation++)
+            quant[level][orientation] = max(quant_idx - s->quant[level][orientation], 0);
+}
+
+void deinterlave() {
+    /*
+    int x, y;
+    ptrdiff_t synthw = width << 1;
+    dwtcoef *linehl = linell + width;
+    dwtcoef *linelh = linell + height*stride;
+    dwtcoef *linehh = linelh + width;
+
+    for (y = 0; y < height; y++) {
+        for (x = 0; x < width; x++) {
+            linell[x] = synthl[(x << 1)];
+            linehl[x] = synthl[(x << 1) + 1];
+            linelh[x] = synthl[(x << 1) + synthw];
+            linehh[x] = synthl[(x << 1) + synthw + 1];
+        }
+        synthl += synthw << 1;
+        linell += stride;
+        linelh += stride;
+        linehl += stride;
+        linehh += stride;
+    }
+    */
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width, x++) {
+            
+        }
+    }
+}
+
+void dwt_haar(int stride, int dst_width, int dst_height, int plane_idx, int s) {
+    const int synth_width  = dst_width << 1;
+    const int synth_height = dst_height << 1;
+    uimage2D plane = planes[plane_idx];
+
+    /* Horizontal synthesis. */
+    for (int y = 0; y < synth_height; y++) {
+        for (int x = 0; x < synth_width; x += 2) {
+            ivec2 coord = ivec2(gl_GlobalInvocationID.xy) * slice_dim + ivec2(x, y);
+            uint a = imageLoad(plane, coord).x;
+            uint b = imageLoad(plane, coord + ivec2(1, 0)).x;
+            uint dst_b = (b - a) * (1 << s);
+            uint dst_a = a * (1 << s) + ((dst_b + 1) >> 1);
+            imageStore(plane, coord, uvec4(dst_a));
+            imageStore(plane, coord + ivec2(1, 0), uvec4(dst_b));
+        }
+    }
+
+    /* Vertical synthesis. */
+    for (int x = 0; x < synth_width; x++) {
+        for (int y = 0; y < synth_height; y += 2) {
+            ivec2 coord = ivec2(gl_GlobalInvocationID.xy) * slice_dim + ivec2(x, y);
+            uint a = imageLoad(plane, coord).x;
+            uint b = imageLoad(plane, coord + ivec2(0, 1)).x;
+            uint dst_b = b - a;
+            uint dst_a = a + ((dst_b + 1) >> 1);
+            imageStore(plane, coord, uvec4(dst_a));
+            imageStore(plane, coord + ivec2(0, 1), uvec4(dst_b));
+        }
+    }
+}
+
+int encode_subband(int sx, int sy, int band_width, int band_height, int quant, int write_index)
+{
+    int left = band_width  * (sx+0) / num_slices.x;
+    int right = band_width  * (sx+1) / num_slices.x;
+    int top = band_height * (sy+0) / num_slices.y;
+    int bottom = band_height * (sy+1) / num_slices.y;
+
+    dwtcoef *coeff = b->buf + top * b->stride;
+    const uint64_t q_m = ((uint64_t)(s->qmagic_lut[quant][0])) << 2;
+    const uint64_t q_a = s->qmagic_lut[quant][1];
+    const int q_s = log2(ff_dirac_qscale_tab[quant]) + 32;
+
+    for (int y = top; y < bottom; y++) {
+        for (int x = left; x < right; x++) {
+            uint c_abs = (q_m * abs(coeff[x]) + q_a) >> q_s;
+            data[write_index++] = c_abs;
+            if (c_abs != 0)
+                put_bits(pb, 1, coeff[x] < 0);
+        }
+        coeff += b->stride;
+    }
+}
+
+
+void main() {
+    /* Step 1. Perform interleaved DWT Haar transform */
+    #pragma unroll
+    for (int l = 0; l < wavelet_depth; l++) {
+        /* Dim is the dimentions of a pixel block necessary to perform 2x2 Haar transform.
+         * As the level increases we get detail pixels in-between so the dimention increases.
+         */
+        int dim = int(pow(2, l + 1));
+        #pragma unroll
+        for (int p = 0; p < 3; p++) {
+            /* Perform Haar on x axis */
+            haar_block_x_axis(dim, p);
+            /* Perform Haar on y axis */
+            haar_block_y_axis(dim, p);
+        }
+    }
+
+    /* Step 2. TODO: Figure out appropriate quant index for optimal slice size */
+    int slice_bytes_max = 1280 * 720 * 8;
+
+    /* Step 3. Quantize and encode */
+    init_quant_matrix();
+
+    int slice_x = int(gl_GlobalInvocationID.x);
+    int slice_y = int(gl_GlobalInvocationID.y);
+
+    /* The reference decoder ignores it, and its typical length is 0 */
+    //memset(put_bits_ptr(pb), 0, s->prefix_bytes);
+    //skip_put_bytes(pb, s->prefix_bytes);
+
+    // put_bits(pb, 8, quant_idx);
+
+    /* Luma + 2 Chroma planes */
+    #pragma unroll
+    for (int p = 0; p < 3; p++) {
+        int bytes_start, bytes_len, pad_s, pad_c;
+        int bytes_start = put_bytes_count(pb, 0);
+        put_bits(pb, 8, 0);
+        for (level = 0; level < s->wavelet_depth; level++) {
+            for (orientation = !!level; orientation < 4; orientation++) {
+                encode_subband(s, pb, slice_x, slice_y,
+                               &s->plane[p].band[level][orientation],
+                               quants[level][orientation]);
+            }
+        }
+        flush_put_bits(pb);
+        bytes_len = put_bytes_output(pb) - bytes_start - 1;
+        if (p == 2) {
+            int len_diff = slice_bytes_max - put_bytes_output(pb);
+            pad_s = FFALIGN((bytes_len + len_diff), s->size_scaler)/s->size_scaler;
+            pad_c = (pad_s*s->size_scaler) - bytes_len;
+        } else {
+            pad_s = FFALIGN(bytes_len, s->size_scaler)/s->size_scaler;
+            pad_c = (pad_s*s->size_scaler) - bytes_len;
+        }
+        pb->buf[bytes_start] = pad_s;
+        /* vc2-reference uses that padding that decodes to '0' coeffs */
+        memset(put_bits_ptr(pb), 0xFF, pad_c);
+        skip_put_bytes(pb, pad_c);
+    }
+
+    return 0;
+
+}

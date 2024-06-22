@@ -424,7 +424,7 @@ void ff_vk_free_buf(FFVulkanContext *s, FFVkBuffer *buf);
 /** Initialize a pool and create AVBufferRefs containing FFVkBuffer.
  * Threadsafe to use. Buffers are automatically mapped on creation if
  * VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT is set in mem_props. Users should
- * synchronize access themselvesd. Mainly meant for device-local buffers. */
+ * synchronize access themselves. Mainly meant for device-local buffers. */
 int ff_vk_get_pooled_buffer(FFVulkanContext *ctx, AVBufferPool **buf_pool,
                             AVBufferRef **buf, VkBufferUsageFlags usage,
                             void *create_pNext, size_t size,
