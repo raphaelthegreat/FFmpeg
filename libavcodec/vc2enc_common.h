@@ -190,10 +190,13 @@ typedef struct VC2EncContext {
     AVBufferPool* dwt_buf_pool;
 
     struct {
-        int levels;
+        int wavelet_depth;
         int slice_dim;
-        int quant_index;
-        VkDeviceAddress dst_buf;
+        int quant_idx;
+        int size_scaler;
+        int prefix_bytes;
+        int num_x;
+        int num_y;
     } consts;
 } VC2EncContext;
 

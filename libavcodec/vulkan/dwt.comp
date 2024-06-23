@@ -5,13 +5,18 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout (set = 0, binding = 0, rgba8) uniform uimage2D planes[3];
 layout (set = 0, binding = 1) buffer DestBuffer {
-    uint data[];
+    uint8_t data[];
+};
+layout (set = 0, binding = 2) uniform buffer QMagicLut {
+    uint qmagic_lut[116][2];
 };
 
 layout(push_constant, std140) uniform ComputeInfo {
     int wavelet_depth;
     int slice_dim;
     int quant_idx;
+    int size_scaler;
+    int prefix_bytes;
     ivec2 num_slices;
 };
 
@@ -133,8 +138,8 @@ int encode_subband(int sx, int sy, int band_width, int band_height, int quant, i
     int bottom = band_height * (sy+1) / num_slices.y;
 
     dwtcoef *coeff = b->buf + top * b->stride;
-    const uint64_t q_m = ((uint64_t)(s->qmagic_lut[quant][0])) << 2;
-    const uint64_t q_a = s->qmagic_lut[quant][1];
+    const uint64_t q_m = ((uint64_t)(qmagic_lut[quant][0])) << 2;
+    const uint64_t q_a = qmagic_lut[quant][1];
     const int q_s = log2(ff_dirac_qscale_tab[quant]) + 32;
 
     for (int y = top; y < bottom; y++) {
@@ -146,8 +151,61 @@ int encode_subband(int sx, int sy, int band_width, int band_height, int quant, i
         }
         coeff += b->stride;
     }
+
+    return write_index;
 }
 
+int align(int x, int a) {
+    return (x+a-1) & ~(a-1);
+}
+
+void encode_hq_slice(int slice_bytes_max) {
+    int global_invoc_index = gl_GlobalInvocationID.y * (gl_WorkGroupSize.x * gl_NumWorkGroups.x) + gl_GlobalInvocationID.x;
+    int write_ptr = slice_bytes_max * global_invoc_index;
+    int slice_x = int(gl_GlobalInvocationID.x);
+    int slice_y = int(gl_GlobalInvocationID.y);
+
+    /* The reference decoder ignores it, and its typical length is 0 */
+    for (int i = 0; i < prefix_bytes; i++) {
+        data[write_ptr + i] = 0;
+    }
+    write_ptr += prefix_bytes;
+    
+    data[write_ptr++] = quant_idx;
+
+    /* Luma + 2 Chroma planes */
+    #pragma unroll
+    for (int p = 0; p < 3; p++) {
+        int pad_s, pad_c;
+        int bytes_start = put_bytes_count(pb, 0);
+        data[write_ptr++] = 0;
+        // put_bits(pb, 8, 0);
+        #pragma unroll
+        for (int level = 0; level < s->wavelet_depth; level++) {
+            #pragma unroll
+            for (int orientation = !!level; orientation < 4; orientation++) {
+                write_index = encode_subband(slice_x, slice_y,
+                                            &s->plane[p].band[level][orientation],
+                                            quants[level][orientation], write_index);
+            }
+        }
+        flush_put_bits(pb);
+        int bytes_len = put_bytes_output(pb) - bytes_start - 1;
+        if (p == 2) {
+            int len_diff = slice_bytes_max - put_bytes_output(pb);
+            pad_s = align((bytes_len + len_diff), size_scaler)/size_scaler;
+            pad_c = (pad_s*size_scaler) - bytes_len;
+        } else {
+            pad_s = align(bytes_len, size_scaler)/size_scaler;
+            pad_c = (pad_s*size_scaler) - bytes_len;
+        }
+        data[bytes_start] = pad_s;
+        /* vc2-reference uses that padding that decodes to '0' coeffs */
+        // memset(put_bits_ptr(pb), 0xFF, pad_c);
+        write_ptr += pad_c;
+        // skip_put_bytes(pb, pad_c);
+    }
+}
 
 void main() {
     /* Step 1. Perform interleaved DWT Haar transform */
@@ -171,44 +229,7 @@ void main() {
 
     /* Step 3. Quantize and encode */
     init_quant_matrix();
-
-    int slice_x = int(gl_GlobalInvocationID.x);
-    int slice_y = int(gl_GlobalInvocationID.y);
-
-    /* The reference decoder ignores it, and its typical length is 0 */
-    //memset(put_bits_ptr(pb), 0, s->prefix_bytes);
-    //skip_put_bytes(pb, s->prefix_bytes);
-
-    // put_bits(pb, 8, quant_idx);
-
-    /* Luma + 2 Chroma planes */
-    #pragma unroll
-    for (int p = 0; p < 3; p++) {
-        int bytes_start, bytes_len, pad_s, pad_c;
-        int bytes_start = put_bytes_count(pb, 0);
-        put_bits(pb, 8, 0);
-        for (level = 0; level < s->wavelet_depth; level++) {
-            for (orientation = !!level; orientation < 4; orientation++) {
-                encode_subband(s, pb, slice_x, slice_y,
-                               &s->plane[p].band[level][orientation],
-                               quants[level][orientation]);
-            }
-        }
-        flush_put_bits(pb);
-        bytes_len = put_bytes_output(pb) - bytes_start - 1;
-        if (p == 2) {
-            int len_diff = slice_bytes_max - put_bytes_output(pb);
-            pad_s = FFALIGN((bytes_len + len_diff), s->size_scaler)/s->size_scaler;
-            pad_c = (pad_s*s->size_scaler) - bytes_len;
-        } else {
-            pad_s = FFALIGN(bytes_len, s->size_scaler)/s->size_scaler;
-            pad_c = (pad_s*s->size_scaler) - bytes_len;
-        }
-        pb->buf[bytes_start] = pad_s;
-        /* vc2-reference uses that padding that decodes to '0' coeffs */
-        memset(put_bits_ptr(pb), 0xFF, pad_c);
-        skip_put_bytes(pb, pad_c);
-    }
+    encode_hq_slice(slice_bytes_max);
 
     return 0;
 
