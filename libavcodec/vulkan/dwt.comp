@@ -1,9 +1,9 @@
 #version 450 core
 #extension GL_EXT_buffer_reference : require
 
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(local_size_x = 32, local_size_y = 16, local_size_z = 1) in;
 
-layout (set = 0, binding = 0, rgba8) uniform uimage2D planes[3];
+layout (set = 0, binding = 0) uniform uimage2D planes[3];
 layout (set = 0, binding = 1) buffer DestBuffer {
     uint8_t data[];
 };
@@ -68,37 +68,7 @@ void init_quant_matrix() {
             quant[level][orientation] = max(quant_idx - s->quant[level][orientation], 0);
 }
 
-void deinterlave() {
-    /*
-    int x, y;
-    ptrdiff_t synthw = width << 1;
-    dwtcoef *linehl = linell + width;
-    dwtcoef *linelh = linell + height*stride;
-    dwtcoef *linehh = linelh + width;
-
-    for (y = 0; y < height; y++) {
-        for (x = 0; x < width; x++) {
-            linell[x] = synthl[(x << 1)];
-            linehl[x] = synthl[(x << 1) + 1];
-            linelh[x] = synthl[(x << 1) + synthw];
-            linehh[x] = synthl[(x << 1) + synthw + 1];
-        }
-        synthl += synthw << 1;
-        linell += stride;
-        linelh += stride;
-        linehl += stride;
-        linehh += stride;
-    }
-    */
-
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width, x++) {
-            
-        }
-    }
-}
-
-void dwt_haar(int stride, int dst_width, int dst_height, int plane_idx, int s) {
+void dwt_haar(int dst_width, int dst_height, int plane_idx, int s) {
     const int synth_width  = dst_width << 1;
     const int synth_height = dst_height << 1;
     uimage2D plane = planes[plane_idx];
@@ -132,19 +102,19 @@ void dwt_haar(int stride, int dst_width, int dst_height, int plane_idx, int s) {
 
 int encode_subband(int sx, int sy, int band_width, int band_height, int quant, int write_index)
 {
-    int left = band_width  * (sx+0) / num_slices.x;
-    int right = band_width  * (sx+1) / num_slices.x;
+    int left = band_width * (sx+0) / num_slices.x;
+    int right = band_width * (sx+1) / num_slices.x;
     int top = band_height * (sy+0) / num_slices.y;
     int bottom = band_height * (sy+1) / num_slices.y;
 
     dwtcoef *coeff = b->buf + top * b->stride;
-    const uint64_t q_m = ((uint64_t)(qmagic_lut[quant][0])) << 2;
-    const uint64_t q_a = qmagic_lut[quant][1];
+    const uint64_t q_m = uint64_t(qmagic_lut[quant][0]) << 2;
+    const uint64_t q_a = uint64_t(qmagic_lut[quant][1]);
     const int q_s = log2(ff_dirac_qscale_tab[quant]) + 32;
 
     for (int y = top; y < bottom; y++) {
         for (int x = left; x < right; x++) {
-            uint c_abs = (q_m * abs(coeff[x]) + q_a) >> q_s;
+            uint c_abs = uint((q_m * abs(coeff[x]) + q_a) >> q_s);
             data[write_index++] = c_abs;
             if (c_abs != 0)
                 put_bits(pb, 1, coeff[x] < 0);
@@ -160,7 +130,8 @@ int align(int x, int a) {
 }
 
 void encode_hq_slice(int slice_bytes_max) {
-    int global_invoc_index = gl_GlobalInvocationID.y * (gl_WorkGroupSize.x * gl_NumWorkGroups.x) + gl_GlobalInvocationID.x;
+    int global_invoc_index = gl_GlobalInvocationID.y * (gl_WorkGroupSize.x * gl_NumWorkGroups.x)
+                                                     + gl_GlobalInvocationID.x;
     int write_ptr = slice_bytes_max * global_invoc_index;
     int slice_x = int(gl_GlobalInvocationID.x);
     int slice_y = int(gl_GlobalInvocationID.y);
@@ -170,7 +141,8 @@ void encode_hq_slice(int slice_bytes_max) {
         data[write_ptr + i] = 0;
     }
     write_ptr += prefix_bytes;
-    
+
+    /* Write quant index for this slice */
     data[write_ptr++] = quant_idx;
 
     /* Luma + 2 Chroma planes */
@@ -179,11 +151,10 @@ void encode_hq_slice(int slice_bytes_max) {
         int pad_s, pad_c;
         int bytes_start = put_bytes_count(pb, 0);
         data[write_ptr++] = 0;
-        // put_bits(pb, 8, 0);
         #pragma unroll
         for (int level = 0; level < s->wavelet_depth; level++) {
             #pragma unroll
-            for (int orientation = !!level; orientation < 4; orientation++) {
+            for (int orientation = uint(level > 0); orientation < 4; orientation++) {
                 write_index = encode_subband(slice_x, slice_y,
                                             &s->plane[p].band[level][orientation],
                                             quants[level][orientation], write_index);
@@ -209,28 +180,17 @@ void encode_hq_slice(int slice_bytes_max) {
 
 void main() {
     /* Step 1. Perform interleaved DWT Haar transform */
-    #pragma unroll
-    for (int l = 0; l < wavelet_depth; l++) {
-        /* Dim is the dimentions of a pixel block necessary to perform 2x2 Haar transform.
-         * As the level increases we get detail pixels in-between so the dimention increases.
-         */
-        int dim = int(pow(2, l + 1));
-        #pragma unroll
-        for (int p = 0; p < 3; p++) {
-            /* Perform Haar on x axis */
-            haar_block_x_axis(dim, p);
-            /* Perform Haar on y axis */
-            haar_block_y_axis(dim, p);
-        }
+    for (int p = 0; p < 3; p++) {
+        ivec2 plane_size = imageSize(planes[p]);
+        int dwt_width = plane_size.x >> wavelet_depth;
+        int dwt_height = plane_size.y >> wavelet_depth;
+        dwt_haar(dwt_width, dwt_height);
     }
 
     /* Step 2. TODO: Figure out appropriate quant index for optimal slice size */
-    int slice_bytes_max = 1280 * 720 * 8;
+    int slice_bytes_max = (1280 * 720 * 3 / 2) / (num_slices.x * num_slices.y);
 
     /* Step 3. Quantize and encode */
     init_quant_matrix();
     encode_hq_slice(slice_bytes_max);
-
-    return 0;
-
 }

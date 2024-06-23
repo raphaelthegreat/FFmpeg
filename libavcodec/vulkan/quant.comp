@@ -1,1 +1,67 @@
 #version 450 core
+#extension GL_EXT_buffer_reference : require
+
+#define SLICE_WIDTH 32
+#define SLICE_HEIGHT 16
+
+layout(local_size_x = SLICE_WIDTH, local_size_y = SLICE_HEIGHT, local_size_z = 1) in;
+
+layout (set = 0, binding = 0, r32ui) uniform uimage2D planes[3];
+layout(push_constant, std140) uniform ComputeInfo {
+    int wavelet_depth;
+    int s;
+};
+
+void dwt_haar(ivec2 dst_size, int plane_idx) {
+    uimage2D plane = planes[plane_idx];
+    ivec2 synth_size = dst_size << 1;
+    ivec2 slice_base = ivec2(gl_WorkGroupID.xy) * ivec2(SLICE_WIDTH, SLICE_HEIGHT);
+    ivec2 coord_in_slice = ivec2(gl_LocalInvocationID.xy);
+
+    /* For horizontal synth pass, each invocation handles a horizontal pair of pixels */
+    ivec2 coord_in_slice_x = ivec2(gl_LocalInvocationID.xy) << ivec2(1, 0);
+    if (all(lessThan(coord_in_slice_x, synth_size))) {
+        ivec2 coord_x = slice_base + coord_in_slice_x;
+        uint a = imageLoad(plane, coord_x).x;
+        uint b = imageLoad(plane, coord_x + ivec2(1, 0)).x;
+        uint dst_b = (b - a) * (1 << s);
+        uint dst_a = a * (1 << s) + ((dst_b + 1) >> 1);
+        imageStore(plane, coord_x, uvec4(dst_a));
+        imageStore(plane, coord_x + ivec2(1, 0), uvec4(dst_b));
+    }
+    memoryBarrier();
+
+    /* For vertical synth pass, each invocation handles a vertical pair of pixels */
+    ivec2 coord_in_slice_y = ivec2(gl_LocalInvocationID.xy) << ivec2(0, 1);
+    if (all(lessThan(coord_in_slice_y, synth_size))) {
+        ivec2 coord_y = slice_base + coord_in_slice_y;
+        uint a = imageLoad(plane, coord_y).x;
+        uint b = imageLoad(plane, coord_y + ivec2(0, 1)).x;
+        uint dst_b = b - a;
+        uint dst_a = a + ((dst_b + 1) >> 1);
+        imageStore(plane, coord_y, uvec4(dst_a));
+        imageStore(plane, coord_y + ivec2(0, 1), uvec4(dst_b));
+    }
+    memoryBarrier();
+
+    /* Finally deinterleave result. Here each invocation is responsible for a single pixel */
+    if (all(lessThan(coord_in_slice, synth_size))) {
+        ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+        ivec2 subband = coord_in_slice & int(1);
+        ivec2 new_coord_in_slice = subband * dst_size + (coord_in_slice >> 1);
+        uint texel = imageLoad(plane, coord).x;
+        barrier();
+        imageStore(plane, slice_base + new_coord_in_slice, uvec4(texel));
+    }
+}
+
+void main() {
+    #pragma unroll
+    for (int p = 0; p < 3; p++) {
+        #pragma unroll
+        for (int l = 1; l <= wavelet_depth; l++) {
+            ivec2 dst_size = ivec2(SLICE_WIDTH, SLICE_HEIGHT) >> l;
+            dwt_haar(dst_size, p);
+        }
+    }
+}
