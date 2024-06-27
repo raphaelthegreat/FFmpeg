@@ -68,62 +68,20 @@
  * of levels. The rest of the areas can be thought as the details needed
  * to restore the image perfectly to its original size.
  */
-static int dwt_plane(AVCodecContext *avctx, void *arg)
+static int dwt_plane(VC2EncContext *s, FFVkExecContext *exec)
 {
-    TransformArgs *transform_dat = arg;
-    VC2EncContext *s = transform_dat->ctx;
-    const void *frame_data = transform_dat->idata;
-    const ptrdiff_t linesize = transform_dat->istride;
-    const int field = transform_dat->field;
-    const Plane *p = transform_dat->plane;
-    VC2TransformContext *t = &transform_dat->t;
-    dwtcoef *buf = p->coef_buf;
-    const int idx = s->wavelet_idx;
-    const int skip = 1 + s->interlaced;
+    FFVulkanContext *vkctx = &s->vkctx;
+    FFVulkanFunctions *vk = &vkctx->vkfn;
 
-    int x, y, level, offset;
-    ptrdiff_t pix_stride = linesize >> (s->bpp - 1);
+    /* Haar DWT pipeline */
+    ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_pl);
 
-    if (field == 1) {
-        offset = 0;
-        pix_stride <<= 1;
-    } else if (field == 2) {
-        offset = pix_stride;
-        pix_stride <<= 1;
-    } else {
-        offset = 0;
-    }
+    /* Push data */
+    ff_vk_update_push_exec(vkctx, exec, &s->dwt_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, sizeof(VC2DwtPushData), &s->dwt_consts);
 
-    if (s->bpp == 1) {
-        const uint8_t *pix = (const uint8_t *)frame_data + offset;
-        for (y = 0; y < p->height*skip; y+=skip) {
-            for (x = 0; x < p->width; x++) {
-                buf[x] = pix[x] - s->diff_offset;
-            }
-            memset(&buf[x], 0, (p->coef_stride - p->width)*sizeof(dwtcoef));
-            buf += p->coef_stride;
-            pix += pix_stride;
-        }
-    } else {
-        const uint16_t *pix = (const uint16_t *)frame_data + offset;
-        for (y = 0; y < p->height*skip; y+=skip) {
-            for (x = 0; x < p->width; x++) {
-                buf[x] = pix[x] - s->diff_offset;
-            }
-            memset(&buf[x], 0, (p->coef_stride - p->width)*sizeof(dwtcoef));
-            buf += p->coef_stride;
-            pix += pix_stride;
-        }
-    }
-
-    memset(buf, 0, p->coef_stride * (p->dwt_height - p->height) * sizeof(dwtcoef));
-
-    for (level = s->wavelet_depth-1; level >= 0; level--) {
-        const SubBand *b = &p->band[level][0];
-        t->vc2_subband_dwt[idx](t, p->coef_buf, p->coef_stride,
-                                b->width, b->height);
-    }
-
+    /* End of Haar DWT pass */
+    vk->CmdDispatch(exec->buf, s->num_x, s->num_y, 1);
     return 0;
 }
 
@@ -165,9 +123,14 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
     FFVkBuffer* buf_vk = NULL;
     FFVulkanContext *vkctx = &s->vkctx;
     FFVulkanFunctions *vk = &vkctx->vkfn;
+    FFVkExecContext *exec = ff_vk_exec_get(&s->e);
+
+    /* Perform Haar DWT pass on the inpute frame. */
+    dwt_plane(s, exec);
 
     /* Calculate per-slice quantizers and sizes */
-    max_frame_bytes = header_size + calc_slice_sizes(s);
+    /* TODO: Properly implement this */
+    max_frame_bytes = header_size + 1280 * 720 * 3 / 2;
 
     /* Get a pooled device local host visible buffer for writing output data */
     if (field < 2) {
@@ -292,6 +255,8 @@ static av_cold int vc2_encode_end(AVCodecContext *avctx)
     return 0;
 }
 
+extern const char *ff_source_dwt_comp;
+
 static av_cold int vc2_encode_init(AVCodecContext *avctx)
 {
     Plane *p;
@@ -304,7 +269,12 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
     FFVkSPIRVShader *shd;
     FFVkSPIRVCompiler *spv;
     FFVulkanDescriptorSetBinding *desc;
+    uint8_t *spv_data;
+    size_t spv_len;
+    void *spv_opaque = NULL;
     AVBufferRef* dwt_buf = NULL;
+    AVBufferRef* coef_buf[3];
+    FFVkBuffer* vk_buf = NULL;
 
     s->picture_number = 0;
 
@@ -412,6 +382,13 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
         p->dwt_height = h = FFALIGN(p->height, (1 << s->wavelet_depth));
         p->coef_stride = FFALIGN(p->dwt_width, 32);
         p->coef_buf = av_mallocz(p->coef_stride*p->dwt_height*sizeof(dwtcoef));
+        ret = ff_vk_get_pooled_buffer(vkctx, &vkctx->dwt_buf_pool, &coef_buf[i],
+                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
+                                      p->coef_stride*p->dwt_height*sizeof(dwtcoef),
+                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        vk_buf = (FFVkBuffer*)coef_buf[i]->data;
+        s->dwt_consts.p[i] = vk_buf->address;
         if (!p->coef_buf)
             return AVERROR(ENOMEM);
         for (level = s->wavelet_depth-1; level >= 0; level--) {
@@ -443,20 +420,25 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
     if (!s->slice_args)
         return AVERROR(ENOMEM);
 
+    /* Create uniform buffer for qmagic_lut. */
+    ret = ff_vk_get_pooled_buffer(vkctx, &vkctx->dwt_buf_pool, &dwt_buf,
+                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, NULL,
+                                  sizeof(s->qmagic_lut),
+                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    vk_buf = (FFVkBuffer*)coef_buf[i]->data;
+    uint64_t* qmagic_lut = (uint64_t*)vk_buf->mapped_mem;
     for (i = 0; i < 116; i++) {
         const uint64_t qf = ff_dirac_qscale_tab[i];
         const uint32_t m = av_log2(qf);
         const uint32_t t = (1ULL << (m + 32)) / qf;
         const uint32_t r = (t*qf + qf) & UINT32_MAX;
         if (!(qf & (qf - 1))) {
-            s->qmagic_lut[i][0] = 0xFFFFFFFF;
-            s->qmagic_lut[i][1] = 0xFFFFFFFF;
+            qmagic_lut[i] = UINT64_MAX;
         } else if (r <= 1 << m) {
-            s->qmagic_lut[i][0] = t + 1;
-            s->qmagic_lut[i][1] = 0;
+            qmagic_lut[i] = t + 1;
         } else {
-            s->qmagic_lut[i][0] = t;
-            s->qmagic_lut[i][1] = t;
+            qmagic_lut[i] = t | (uint64_t)t << 32;
         }
     }
 
@@ -469,9 +451,10 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
 
     ff_vk_qf_init(vkctx, &s->qf, VK_QUEUE_COMPUTE_BIT);
     ff_vk_exec_pool_init(vkctx, &s->qf, &s->e, s->qf.nb_queues * 4, 0, 0, 0, NULL);
-    ff_vk_shader_init(&s->pl, &s->shd, "haar_dwt", VK_SHADER_STAGE_COMPUTE_BIT, 0);
+    ff_vk_shader_init(&s->dwt_pl, &s->shd, "haar_dwt", VK_SHADER_STAGE_COMPUTE_BIT, 0);
     shd = &s->shd;
 
+    /* Build DWT descriptor set. */
     desc = (FFVulkanDescriptorSetBinding[])
     {
         {
@@ -483,12 +466,16 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
             .stages = VK_SHADER_STAGE_COMPUTE_BIT,
         },
     };
-    RET(ff_vk_pipeline_descriptor_set_add(vkctx, pl, shd, desc, 1, 0, 0));
-    ff_vk_shader_set_compute_sizes(shd, 8, 8, 1);
+    RET(ff_vk_pipeline_descriptor_set_add(vkctx, s->dwt_pl, shd, desc, 1, 0, 0));
+
+    /* Compile Haar shader */
+    strcpy(shd->source, ff_source_dwt_comp);
+    RET(spv->compile_shader(spv, vkctx, shd, &spv_data, &spv_len, "main", &spv_opaque));
+    RET(ff_vk_shader_create(vkctx, shd, spv_data, spv_len, "main"));
 
     /* Initialize Haar compute pipeline */
-    RET(ff_vk_init_compute_pipeline(vkctx, &s->pl, &s->shd));
-    RET(ff_vk_exec_pipeline_register(vkctx, &s->e, &s->pl));
+    RET(ff_vk_init_compute_pipeline(vkctx, &s->dwt_pl, &s->shd));
+    RET(ff_vk_exec_pipeline_register(vkctx, &s->e, &s->dwt_pl));
 
     return 0;
 }

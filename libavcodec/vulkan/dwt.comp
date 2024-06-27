@@ -1,196 +1,76 @@
 #version 450 core
 #extension GL_EXT_buffer_reference : require
 
-layout(local_size_x = 32, local_size_y = 16, local_size_z = 1) in;
+#define SLICE_WIDTH 32
+#define SLICE_HEIGHT 16
 
-layout (set = 0, binding = 0) uniform uimage2D planes[3];
-layout (set = 0, binding = 1) buffer DestBuffer {
-    uint8_t data[];
+layout(local_size_x = SLICE_WIDTH, local_size_y = SLICE_HEIGHT, local_size_z = 1) in;
+
+layout (set = 0, binding = 0, r32ui) uniform uimage2D planes[3];
+
+layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
+    uint coef_buf[];
 };
-layout (set = 0, binding = 2) uniform buffer QMagicLut {
-    uint qmagic_lut[116][2];
-};
+
+layout (set = 0, binding = 3, r32ui) uniform uimage2D coef_buf[3];
 
 layout(push_constant, std140) uniform ComputeInfo {
     int wavelet_depth;
-    int slice_dim;
-    int quant_idx;
-    int size_scaler;
-    int prefix_bytes;
-    ivec2 num_slices;
+    int s;
+    DwtCoef p[3];
 };
 
-#define MAX_DWT_LEVELS 4
+void dwt_haar(ivec2 dst_size, int plane_idx) {
+    int stride = imageSize(planes[plane_idx]).x;
+    ivec2 synth_size = dst_size << 1;
+    ivec2 slice_base = ivec2(gl_WorkGroupID.xy) * ivec2(SLICE_WIDTH, SLICE_HEIGHT);
+    ivec2 coord_in_slice = ivec2(gl_LocalInvocationID.xy);
 
-const uint ff_dirac_default_qmat[7][4][4] = uint[7][4][4](
-    uint[7][4](uint[4](5,  3,  3,  0), uint[4](0,  4,  4,  1), uint[4](0,  5,  5,  2), uint[4](0,  6,  6,  3)),
-    uint[7][4](uint[4](4,  2,  2,  0), uint[4](0,  4,  4,  2), uint[4](0,  5,  5,  3), uint[4](0,  7,  7,  5)),
-    uint[7][4](uint[4](5,  3,  3,  0), uint[4](0,  4,  4,  1), uint[4](0,  5,  5,  2), uint[4](0,  6,  6,  3)),
-    uint[7][4](uint[4](8,  4,  4,  0), uint[4](0,  4,  4,  0), uint[4](0,  4,  4,  0), uint[4](0,  4,  4,  0)),
-    uint[7][4](uint[4](8,  4,  4,  0), uint[4](0,  4,  4,  0), uint[4](0,  4,  4,  0), uint[4](0,  4,  4,  0)),
-    uint[7][4](uint[4](0,  4,  4,  8), uint[4](0,  8,  8, 12), uint[4](0, 13, 13, 17), uint[4](0, 17, 17, 21)),
-    uint[7][4](uint[4](3,  1,  1,  0), uint[4](0,  4,  4,  2), uint[4](0,  6,  6,  5), uint[4](0,  9,  9,  7))
-);
-
-const int ff_dirac_qscale_tab[116] = int[116](
-    4,         5,         6,         7,         8,        10,        11,        13,
-    16,        19,        23,        27,        32,        38,        45,        54,
-    64,        76,        91,       108,       128,       152,       181,       215,
-    256,       304,       362,       431,       512,       609,       724,       861,
-    1024,      1218,      1448,      1722,      2048,      2435,      2896,      3444,
-    4096,      4871,      5793,      6889,      8192,      9742,     11585,     13777,
-    16384,     19484,     23170,     27554,     32768,     38968,     46341,     55109,
-    65536,     77936,     92682,    110218,    131072,    155872,    185364,    220436,
-    262144,    311744,    370728,    440872,    524288,    623487,    741455,    881744,
-    1048576,   1246974,   1482910,   1763488,   2097152,   2493948,   2965821,   3526975,
-    4194304,   4987896,   5931642,   7053950,   8388608,   9975792,  11863283,  14107901,
-    16777216,  19951585,  23726566,  28215802,  33554432,  39903169,  47453133,  56431603,
-    67108864,  79806339,  94906266, 112863206, 134217728, 159612677, 189812531, 225726413,
-    268435456, 319225354, 379625062, 451452825, 536870912, 638450708, 759250125, 902905651,
-    1073741824,1276901417,1518500250,1805811301, 0, 0, 0, 0, 0/*2147483648,2553802834,3037000500,3611622603,
-    4294967296*/
-);
-
-uint quant[MAX_DWT_LEVELS][4];
-
-void init_quant_matrix() {
-    int wavelet_idx = 3; // VC2_TRANSFORM_HAAR
-    for (int level = 0; level < wavelet_depth; level++) {
-        quant[level][0] = ff_dirac_default_qmat[wavelet_idx][level][0];
-        quant[level][1] = ff_dirac_default_qmat[wavelet_idx][level][1];
-        quant[level][2] = ff_dirac_default_qmat[wavelet_idx][level][2];
-        quant[level][3] = ff_dirac_default_qmat[wavelet_idx][level][3];
+    /* For horizontal synth pass, each invocation handles a horizontal pair of pixels */
+    ivec2 coord_in_slice_x = ivec2(gl_LocalInvocationID.xy) << ivec2(1, 0);
+    if (all(lessThan(coord_in_slice_x, synth_size))) {
+        ivec2 coord_x = slice_base + coord_in_slice_x;
+        uint a = imageLoad(planes[plane_idx], coord_x).x;
+        uint b = imageLoad(planes[plane_idx], coord_x + ivec2(1, 0)).x;
+        uint dst_b = (b - a) * (1 << s);
+        uint dst_a = a * (1 << s) + ((dst_b + 1) >> 1);
+        p[plane_idx].coef_buf[coord_x.y * stride + coord_x.x] = dst_a;
+        p[plane_idx].coef_buf[coord_x.y * stride + coord_x.x + 1] = dst_b;
     }
+    memoryBarrier();
 
-    /* Slice quantization (slice_quantizers() in the specs) */
-    for (int level = 0; level < wavelet_depth; level++)
-        for (int orientation = !!level; orientation < 4; orientation++)
-            quant[level][orientation] = max(quant_idx - s->quant[level][orientation], 0);
-}
-
-void dwt_haar(int dst_width, int dst_height, int plane_idx, int s) {
-    const int synth_width  = dst_width << 1;
-    const int synth_height = dst_height << 1;
-    uimage2D plane = planes[plane_idx];
-
-    /* Horizontal synthesis. */
-    for (int y = 0; y < synth_height; y++) {
-        for (int x = 0; x < synth_width; x += 2) {
-            ivec2 coord = ivec2(gl_GlobalInvocationID.xy) * slice_dim + ivec2(x, y);
-            uint a = imageLoad(plane, coord).x;
-            uint b = imageLoad(plane, coord + ivec2(1, 0)).x;
-            uint dst_b = (b - a) * (1 << s);
-            uint dst_a = a * (1 << s) + ((dst_b + 1) >> 1);
-            imageStore(plane, coord, uvec4(dst_a));
-            imageStore(plane, coord + ivec2(1, 0), uvec4(dst_b));
-        }
+    /* For vertical synth pass, each invocation handles a vertical pair of pixels */
+    ivec2 coord_in_slice_y = ivec2(gl_LocalInvocationID.xy) << ivec2(0, 1);
+    if (all(lessThan(coord_in_slice_y, synth_size))) {
+        ivec2 coord_y = slice_base + coord_in_slice_y;
+        uint a = imageLoad(planes[plane_idx], coord_y).x;
+        uint b = imageLoad(planes[plane_idx], coord_y + ivec2(0, 1)).x;
+        uint dst_b = b - a;
+        uint dst_a = a + ((dst_b + 1) >> 1);
+        p[plane_idx].coef_buf[coord_y.y * stride + coord_y.x] = dst_a;
+        p[plane_idx].coef_buf[(coord_y.y + 1) * stride + coord_y.x + 1] = dst_b;
     }
+    memoryBarrier();
 
-    /* Vertical synthesis. */
-    for (int x = 0; x < synth_width; x++) {
-        for (int y = 0; y < synth_height; y += 2) {
-            ivec2 coord = ivec2(gl_GlobalInvocationID.xy) * slice_dim + ivec2(x, y);
-            uint a = imageLoad(plane, coord).x;
-            uint b = imageLoad(plane, coord + ivec2(0, 1)).x;
-            uint dst_b = b - a;
-            uint dst_a = a + ((dst_b + 1) >> 1);
-            imageStore(plane, coord, uvec4(dst_a));
-            imageStore(plane, coord + ivec2(0, 1), uvec4(dst_b));
-        }
-    }
-}
-
-int encode_subband(int sx, int sy, int band_width, int band_height, int quant, int write_index)
-{
-    int left = band_width * (sx+0) / num_slices.x;
-    int right = band_width * (sx+1) / num_slices.x;
-    int top = band_height * (sy+0) / num_slices.y;
-    int bottom = band_height * (sy+1) / num_slices.y;
-
-    dwtcoef *coeff = b->buf + top * b->stride;
-    const uint64_t q_m = uint64_t(qmagic_lut[quant][0]) << 2;
-    const uint64_t q_a = uint64_t(qmagic_lut[quant][1]);
-    const int q_s = log2(ff_dirac_qscale_tab[quant]) + 32;
-
-    for (int y = top; y < bottom; y++) {
-        for (int x = left; x < right; x++) {
-            uint c_abs = uint((q_m * abs(coeff[x]) + q_a) >> q_s);
-            data[write_index++] = c_abs;
-            if (c_abs != 0)
-                put_bits(pb, 1, coeff[x] < 0);
-        }
-        coeff += b->stride;
-    }
-
-    return write_index;
-}
-
-int align(int x, int a) {
-    return (x+a-1) & ~(a-1);
-}
-
-void encode_hq_slice(int slice_bytes_max) {
-    int global_invoc_index = gl_GlobalInvocationID.y * (gl_WorkGroupSize.x * gl_NumWorkGroups.x)
-                                                     + gl_GlobalInvocationID.x;
-    int write_ptr = slice_bytes_max * global_invoc_index;
-    int slice_x = int(gl_GlobalInvocationID.x);
-    int slice_y = int(gl_GlobalInvocationID.y);
-
-    /* The reference decoder ignores it, and its typical length is 0 */
-    for (int i = 0; i < prefix_bytes; i++) {
-        data[write_ptr + i] = 0;
-    }
-    write_ptr += prefix_bytes;
-
-    /* Write quant index for this slice */
-    data[write_ptr++] = quant_idx;
-
-    /* Luma + 2 Chroma planes */
-    #pragma unroll
-    for (int p = 0; p < 3; p++) {
-        int pad_s, pad_c;
-        int bytes_start = put_bytes_count(pb, 0);
-        data[write_ptr++] = 0;
-        #pragma unroll
-        for (int level = 0; level < s->wavelet_depth; level++) {
-            #pragma unroll
-            for (int orientation = uint(level > 0); orientation < 4; orientation++) {
-                write_index = encode_subband(slice_x, slice_y,
-                                            &s->plane[p].band[level][orientation],
-                                            quants[level][orientation], write_index);
-            }
-        }
-        flush_put_bits(pb);
-        int bytes_len = put_bytes_output(pb) - bytes_start - 1;
-        if (p == 2) {
-            int len_diff = slice_bytes_max - put_bytes_output(pb);
-            pad_s = align((bytes_len + len_diff), size_scaler)/size_scaler;
-            pad_c = (pad_s*size_scaler) - bytes_len;
-        } else {
-            pad_s = align(bytes_len, size_scaler)/size_scaler;
-            pad_c = (pad_s*size_scaler) - bytes_len;
-        }
-        data[bytes_start] = pad_s;
-        /* vc2-reference uses that padding that decodes to '0' coeffs */
-        // memset(put_bits_ptr(pb), 0xFF, pad_c);
-        write_ptr += pad_c;
-        // skip_put_bytes(pb, pad_c);
+    /* Finally deinterleave result. Here each invocation is responsible for a single pixel */
+    if (all(lessThan(coord_in_slice, synth_size))) {
+        ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+        ivec2 subband = coord_in_slice & int(1);
+        ivec2 new_coord_in_slice = subband * dst_size + (coord_in_slice >> 1);
+        ivec2 new_coord = slice_base + new_coord_in_slice;
+        uint texel = p[plane_idx].coef_buf[coord.y * stride + coord.x];
+        barrier();
+        p[plane_idx].coef_buf[new_coord.y * stride + new_coord.x] = texel;
     }
 }
 
 void main() {
-    /* Step 1. Perform interleaved DWT Haar transform */
+    #pragma unroll
     for (int p = 0; p < 3; p++) {
-        ivec2 plane_size = imageSize(planes[p]);
-        int dwt_width = plane_size.x >> wavelet_depth;
-        int dwt_height = plane_size.y >> wavelet_depth;
-        dwt_haar(dwt_width, dwt_height);
+        #pragma unroll
+        for (int l = 1; l <= wavelet_depth; l++) {
+            ivec2 dst_size = ivec2(SLICE_WIDTH, SLICE_HEIGHT) >> l;
+            dwt_haar(dst_size, p);
+        }
     }
-
-    /* Step 2. TODO: Figure out appropriate quant index for optimal slice size */
-    int slice_bytes_max = (1280 * 720 * 3 / 2) / (num_slices.x * num_slices.y);
-
-    /* Step 3. Quantize and encode */
-    init_quant_matrix();
-    encode_hq_slice(slice_bytes_max);
 }

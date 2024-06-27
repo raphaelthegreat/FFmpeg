@@ -122,6 +122,12 @@ typedef struct TransformArgs {
     VC2TransformContext t;
 } TransformArgs;
 
+typedef struct VC2DwtPushData {
+    int wavelet_depth;
+    int s;
+    VkDeviceAddress p[3];
+} VC2DwtPushData;
+
 typedef struct VC2EncContext {
     AVClass *av_class;
     PutBitContext pb;
@@ -185,7 +191,7 @@ typedef struct VC2EncContext {
     FFVkQueueFamilyCtx qf;
     FFVkExecPool e;
 
-    FFVulkanPipeline pl;
+    FFVulkanPipeline dwt_pl;
     FFVkSPIRVShader shd;
     AVBufferPool* dwt_buf_pool;
 
@@ -198,6 +204,7 @@ typedef struct VC2EncContext {
         int num_x;
         int num_y;
     } consts;
+    VC2DwtPushData dwt_consts;
 } VC2EncContext;
 
 void encode_parse_info(VC2EncContext *s, enum DiracParseCodes pcode);
