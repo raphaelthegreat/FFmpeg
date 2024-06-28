@@ -128,6 +128,24 @@ typedef struct VC2DwtPushData {
     VkDeviceAddress p[3];
 } VC2DwtPushData;
 
+typedef struct VC2EncAuxData {
+    uint32_t qmagic_lut[116][2];
+    uint32_t quant[MAX_DWT_LEVELS][4];
+    int ff_dirac_qscale_tab[116];
+} VC2EncAuxData;
+
+typedef struct VC2EncPushData {
+    int wavelet_depth;
+    int slice_x;
+    int slice_y;
+    int quant_idx;
+    int size_scaler;
+    int prefix_bytes;
+    int num_x;
+    int num_y;
+    VkDeviceAddress p[3];
+} VC2EncPushData;
+
 typedef struct VC2EncContext {
     AVClass *av_class;
     PutBitContext pb;
@@ -192,18 +210,11 @@ typedef struct VC2EncContext {
     FFVkExecPool e;
 
     FFVulkanPipeline dwt_pl;
+    FFVulkanPipeline enc_pl;
     FFVkSPIRVShader shd;
     AVBufferPool* dwt_buf_pool;
 
-    struct {
-        int wavelet_depth;
-        int slice_dim;
-        int quant_idx;
-        int size_scaler;
-        int prefix_bytes;
-        int num_x;
-        int num_y;
-    } consts;
+    VC2EncPushData enc_consts;
     VC2DwtPushData dwt_consts;
 } VC2EncContext;
 

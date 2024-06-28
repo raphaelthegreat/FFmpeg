@@ -12,8 +12,6 @@ layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
     uint coef_buf[];
 };
 
-layout (set = 0, binding = 3, r32ui) uniform uimage2D coef_buf[3];
-
 layout(push_constant, std140) uniform ComputeInfo {
     int wavelet_depth;
     int s;
