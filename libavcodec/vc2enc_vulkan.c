@@ -84,11 +84,12 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec)
     vk->CmdDispatch(exec->buf, s->num_x, s->num_y, 1);
 }
 
-int vulkan_encode_slices(VC2EncContext *s)
+static void vulkan_encode_slices(VC2EncContext *s)
 {
     uint8_t *buf;
     FFVulkanContext *vkctx = &s->vkctx;
     FFVulkanFunctions *vk = &vkctx->vkfn;
+    FFVkExecContext *exec = ff_vk_exec_get(&s->e);
 
     flush_put_bits(&s->pb);
     buf = put_bits_ptr(&s->pb);
@@ -99,20 +100,12 @@ int vulkan_encode_slices(VC2EncContext *s)
     /* Push data */
     s->enc_consts.quant_idx = 0; // TODO: Part of slice size estimation.
     s->enc_consts.prefix_bytes = 0;
+    s->enc_consts.size_scaler = s->size_scaler;
     ff_vk_update_push_exec(vkctx, exec, &s->enc_pl, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(VC2EncPushData), &s->enc_consts);
 
     /* End of encoding pass pass */
     vk->CmdDispatch(exec->buf, s->num_x, s->num_y, 1);
-
-
-    // Dispatch.
-    //s->avctx->execute(s->avctx, encode_hq_slice, enc_args, NULL, s->num_x*s->num_y,
-    //                  sizeof(SliceArgs));
-
-    skip_put_bytes(&s->pb, skip);
-
-    return 0;
 }
 
 static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
@@ -136,17 +129,17 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
 
     /* Get a pooled device local host visible buffer for writing output data */
     if (field < 2) {
-        ret = ff_vk_get_pooled_buffer(vkctx, &vkctx->dwt_buf_pool, &avpkt_buf,
+        ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &avpkt_buf,
                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
                                       max_frame_bytes << s->interlaced,
                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                                          VK_MEMORY_PROPERTY_HOST_VISIBLE);
+                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
         avpkt->buf = avpkt_buf;
         avpkt->data = avpkt_buf->data;
         avpkt->size = max_frame_bytes << s->interlaced;
         buf_vk = (FFVkBuffer *)avpkt_buf->data;
-        s->enc_consts.dst_buf = buf_vk->address;
+        s->enc_consts.pb = buf_vk->address;
 
         if (ret) {
             av_log(s->avctx, AV_LOG_ERROR, "Error getting output packet.\n");
@@ -264,7 +257,7 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
 {
     Plane *p;
     SubBand *b;
-    int i, level, o, shift, ret;
+    int i, level, o, shift, ret, err = 0;
     const AVPixFmtDescriptor *fmt = av_pix_fmt_desc_get(avctx->pix_fmt);
     const int depth = fmt->comp[0].depth;
     VC2EncContext *s = avctx->priv_data;
@@ -386,7 +379,7 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
         p->dwt_height = h = FFALIGN(p->height, (1 << s->wavelet_depth));
         p->coef_stride = FFALIGN(p->dwt_width, 32);
         p->coef_buf = av_mallocz(p->coef_stride*p->dwt_height*sizeof(dwtcoef));
-        ret = ff_vk_get_pooled_buffer(vkctx, &vkctx->dwt_buf_pool, &coef_buf[i],
+        ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &coef_buf[i],
                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
                                       p->coef_stride*p->dwt_height*sizeof(dwtcoef),
@@ -428,7 +421,7 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
         return AVERROR(ENOMEM);
 
     /* Create uniform buffer for encoder auxilary data. */
-    ret = ff_vk_get_pooled_buffer(vkctx, &vkctx->dwt_buf_pool, &dwt_buf,
+    ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &dwt_buf,
                                   VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, NULL,
                                   sizeof(VC2EncAuxData),
                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
@@ -466,6 +459,7 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
     s->enc_consts.wavelet_depth = s->wavelet_depth;
     s->enc_consts.slice_x = s->slice_width;
     s->enc_consts.slice_y = s->slice_height;
+    s->dwt_consts.wavelet_depth = s->wavelet_depth;
 
     /* Initialize spirv compiler */
     spv = ff_vk_spirv_init();
@@ -491,10 +485,10 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
             .stages = VK_SHADER_STAGE_COMPUTE_BIT,
         },
     };
-    RET(ff_vk_pipeline_descriptor_set_add(vkctx, s->dwt_pl, shd, desc, 1, 0, 0));
+    RET(ff_vk_pipeline_descriptor_set_add(vkctx, &s->dwt_pl, shd, desc, 1, 0, 0));
 
     /* Compile Haar shader */
-    strcpy(shd->source, ff_source_dwt_comp);
+    av_bprintf(&shd->src, "%s", ff_source_dwt_comp);
     RET(spv->compile_shader(spv, vkctx, shd, &spv_data, &spv_len, "main", &spv_opaque));
     RET(ff_vk_shader_create(vkctx, shd, spv_data, spv_len, "main"));
 
@@ -511,10 +505,10 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
             .stages      = VK_SHADER_STAGE_COMPUTE_BIT,
         },
     };
-    RET(ff_vk_pipeline_descriptor_set_add(vkctx, s->enc_pl, shd, desc, 1, 0, 0));
+    RET(ff_vk_pipeline_descriptor_set_add(vkctx, &s->enc_pl, shd, desc, 1, 0, 0));
 
     /* Compile encoding shader */
-    strcpy(shd->source, ff_source_vc2enc_comp);
+    av_bprintf(&shd->src, "%s", ff_source_vc2enc_comp);
     RET(spv->compile_shader(spv, vkctx, shd, &spv_data, &spv_len, "main", &spv_opaque));
     RET(ff_vk_shader_create(vkctx, shd, spv_data, spv_len, "main"));
 
@@ -522,7 +516,8 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
     RET(ff_vk_init_compute_pipeline(vkctx, &s->enc_pl, &s->shd));
     RET(ff_vk_exec_pipeline_register(vkctx, &s->e, &s->enc_pl));
 
-    return 0;
+fail:
+    return err;
 }
 
 #define VC2ENC_FLAGS (AV_OPT_FLAG_ENCODING_PARAM | AV_OPT_FLAG_VIDEO_PARAM)

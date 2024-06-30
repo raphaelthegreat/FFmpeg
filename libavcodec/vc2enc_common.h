@@ -144,6 +144,7 @@ typedef struct VC2EncPushData {
     int num_x;
     int num_y;
     VkDeviceAddress p[3];
+    VkDeviceAddress pb;
 } VC2EncPushData;
 
 typedef struct VC2EncContext {
