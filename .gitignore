@@ -26,6 +26,16 @@
 *.ptx.c
 *.ptx.gz
 *_g
+*.cflags
+*.config
+*.creator
+*.creator.user
+*.cxxflags
+*.files
+*.includes
+*.cflags
+*.mp4
+*.vc2
 \#*
 .\#*
 /.config
@@ -41,3 +51,4 @@
 /src
 /mapfile
 /tools/python/__pycache__/
+/.qtc_clangd

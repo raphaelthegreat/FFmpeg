@@ -217,6 +217,7 @@ typedef struct VC2EncContext {
 
     VC2EncPushData enc_consts;
     VC2DwtPushData dwt_consts;
+    int is_initialized;
 } VC2EncContext;
 
 void encode_parse_info(VC2EncContext *s, enum DiracParseCodes pcode);

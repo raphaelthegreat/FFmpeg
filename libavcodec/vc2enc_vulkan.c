@@ -25,6 +25,7 @@
 #include "libavutil/opt.h"
 #include "libavutil/version.h"
 #include "libavfilter/vulkan_spirv.h"
+#include "libavutil/hwcontext_vulkan.h"
 #include "codec_internal.h"
 #include "internal.h"
 #include "encode.h"
@@ -32,6 +33,345 @@
 #include "vc2enc_common.h"
 #include "vulkan.h"
 #include "hwconfig.h"
+
+static const char *ff_source_dwt_comp =
+    "#version 450 core\n"
+    "#extension GL_EXT_buffer_reference : require\n"
+    "\n"
+    "#define SLICE_WIDTH 32\n"
+    "#define SLICE_HEIGHT 16\n"
+    "\n"
+    "layout(local_size_x = SLICE_WIDTH, local_size_y = SLICE_HEIGHT, local_size_z = 1) in;\n"
+    "\n"
+    "layout (set = 0, binding = 0, r32ui) uniform uimage2D planes[3];\n"
+    "\n"
+    "layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {\n"
+    "    uint coef_buf[];\n"
+    "};\n"
+    "\n"
+    "layout(push_constant, std140) uniform ComputeInfo {\n"
+    "    int wavelet_depth;\n"
+    "    int s;\n"
+    "    DwtCoef p[3];\n"
+    "};\n"
+    "\n"
+    "void dwt_haar(ivec2 dst_size, int plane_idx) {\n"
+    "    int stride = imageSize(planes[plane_idx]).x;\n"
+    "    ivec2 synth_size = dst_size << 1;\n"
+    "    ivec2 slice_base = ivec2(gl_WorkGroupID.xy) * ivec2(SLICE_WIDTH, SLICE_HEIGHT);\n"
+    "    ivec2 coord_in_slice = ivec2(gl_LocalInvocationID.xy);\n"
+    "\n"
+    "    /* For horizontal synth pass, each invocation handles a horizontal pair of pixels */\n"
+    "    ivec2 coord_in_slice_x = ivec2(gl_LocalInvocationID.xy) << ivec2(1, 0);\n"
+    "    if (all(lessThan(coord_in_slice_x, synth_size))) {\n"
+    "        ivec2 coord_x = slice_base + coord_in_slice_x;\n"
+    "        uint a = imageLoad(planes[plane_idx], coord_x).x;\n"
+    "        uint b = imageLoad(planes[plane_idx], coord_x + ivec2(1, 0)).x;\n"
+    "        uint dst_b = (b - a) * (1 << s);\n"
+    "        uint dst_a = a * (1 << s) + ((dst_b + 1) >> 1);\n"
+    "        p[plane_idx].coef_buf[coord_x.y * stride + coord_x.x] = dst_a;\n"
+    "        p[plane_idx].coef_buf[coord_x.y * stride + coord_x.x + 1] = dst_b;\n"
+    "    }\n"
+    "    memoryBarrier();\n"
+    "\n"
+    "    /* For vertical synth pass, each invocation handles a vertical pair of pixels */\n"
+    "    ivec2 coord_in_slice_y = ivec2(gl_LocalInvocationID.xy) << ivec2(0, 1);\n"
+    "    if (all(lessThan(coord_in_slice_y, synth_size))) {\n"
+    "        ivec2 coord_y = slice_base + coord_in_slice_y;\n"
+    "        uint a = imageLoad(planes[plane_idx], coord_y).x;\n"
+    "        uint b = imageLoad(planes[plane_idx], coord_y + ivec2(0, 1)).x;\n"
+    "        uint dst_b = b - a;\n"
+    "        uint dst_a = a + ((dst_b + 1) >> 1);\n"
+    "        p[plane_idx].coef_buf[coord_y.y * stride + coord_y.x] = dst_a;\n"
+    "        p[plane_idx].coef_buf[(coord_y.y + 1) * stride + coord_y.x + 1] = dst_b;\n"
+    "    }\n"
+    "    memoryBarrier();\n"
+    "\n"
+    "    /* Finally deinterleave result. Here each invocation is responsible for a single pixel */\n"
+    "    if (all(lessThan(coord_in_slice, synth_size))) {\n"
+    "        ivec2 coord = ivec2(gl_GlobalInvocationID.xy);\n"
+    "        ivec2 subband = coord_in_slice & int(1);\n"
+    "        ivec2 new_coord_in_slice = subband * dst_size + (coord_in_slice >> 1);\n"
+    "        ivec2 new_coord = slice_base + new_coord_in_slice;\n"
+    "        uint texel = p[plane_idx].coef_buf[coord.y * stride + coord.x];\n"
+    "        barrier();\n"
+    "        p[plane_idx].coef_buf[new_coord.y * stride + new_coord.x] = texel;\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "void main() {\n"
+    "    #pragma unroll\n"
+    "    for (int p = 0; p < 3; p++) {\n"
+    "        #pragma unroll\n"
+    "        for (int l = 1; l <= wavelet_depth; l++) {\n"
+    "            ivec2 dst_size = ivec2(SLICE_WIDTH, SLICE_HEIGHT) >> l;\n"
+    "            dwt_haar(dst_size, p);\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+
+static const char *ff_source_vc2enc_comp =
+    "#version 450 core\n"
+    "#extension GL_EXT_buffer_reference : require\n"
+    "#extension GL_EXT_shader_explicit_arithmetic_types : require\n"
+    "\n"
+    "// TODO: Process pixels in parallel\n"
+    "layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;\n"
+    "\n"
+    "#define MAX_DWT_LEVELS (5)\n"
+    "\n"
+    "layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {\n"
+    "    int coef_buf[];\n"
+    "};\n"
+    "layout(std430, buffer_reference, buffer_reference_align = 1) buffer BitBuf {\n"
+    "    uint8_t data[];\n"
+    "};\n"
+    "\n"
+    "layout(set = 0, binding = 0) uniform QMagicLut {\n"
+    "    int qmagic_lut[116][2];\n"
+    "    int quant[MAX_DWT_LEVELS][4];\n"
+    "    int ff_dirac_qscale_tab[116];\n"
+    "};\n"
+    "\n"
+    "layout(push_constant, std140) uniform ComputeInfo {\n"
+    "    int wavelet_depth;\n"
+    "    ivec2 slice_dim;\n"
+    "    int quant_idx;\n"
+    "    int size_scaler;\n"
+    "    int prefix_bytes;\n"
+    "    ivec2 num_slices;\n"
+    "    DwtCoef p[3];\n"
+    "    BitBuf pb;\n"
+    "};\n"
+    "\n"
+    "int encode_subband(ivec2 slice_coord, ivec2 band_size, int quant, int o, int plane, int write_index) {\n"
+    "    int left = band_size.x * (slice_coord.x+0) / num_slices.x;\n"
+    "    int right = band_size.x * (slice_coord.x+1) / num_slices.x;\n"
+    "    int top = band_size.y * (slice_coord.y+0) / num_slices.y;\n"
+    "    int bottom = band_size.y * (slice_coord.y+1) / num_slices.y;\n"
+    "\n"
+    "    int stride = slice_dim.x * num_slices.x;\n"
+    "    int band_ptr = int(o > 1) * band_size.y * stride + (o & 1) * band_size.x;\n"
+    "    int start = band_ptr + top * stride;\n"
+    "    const uint64_t q_m = uint64_t(qmagic_lut[quant][0]) << 2;\n"
+    "    const uint64_t q_a = uint64_t(qmagic_lut[quant][1]);\n"
+    "    const int q_s = int(log2(ff_dirac_qscale_tab[quant])) + 32;\n"
+    "\n"
+    "    for (int y = top; y < bottom; y++) {\n"
+    "        for (int x = left; x < right; x++) {\n"
+    "            int coef = p[plane].coef_buf[band_ptr + x];\n"
+    "            uint c_abs = uint((q_m * abs(coef) + q_a) >> q_s);\n"
+    "            for (int i = 0; i < 4; i++) {\n"
+    "                pb.data[write_index++] = uint8_t((c_abs >> (i * 8)) & 0xFF);\n"
+    "            }\n"
+    "            //if (c_abs != 0)\n"
+    "            //    put_bits(pb, 1, coef < 0);\n"
+    "        }\n"
+    "        band_ptr += stride;\n"
+    "    }\n"
+    "\n"
+    "    return write_index;\n"
+    "}\n"
+    "\n"
+    "int align(int x, int a) {\n"
+    "    return (x+a-1) & ~(a-1);\n"
+    "}\n"
+    "\n"
+    "void encode_hq_slice(int slice_bytes_max) {\n"
+    "    ivec2 slice_coord = ivec2(gl_GlobalInvocationID.xy);\n"
+    "    int slice_index = slice_coord.y * slice_dim.x + slice_coord.x;\n"
+    "    int write_ptr = slice_bytes_max * slice_index;\n"
+    "    int bit_ptr = 0;\n"
+    "\n"
+    "    /* The reference decoder ignores it, and its typical length is 0 */\n"
+    "    for (int i = 0; i < prefix_bytes; i++) {\n"
+    "        pb.data[write_ptr + i] = uint8_t(0);\n"
+    "    }\n"
+    "    write_ptr += prefix_bytes;\n"
+    "\n"
+    "    /* Write quant index for this slice */\n"
+    "    for (int i = 0; i < 4; i++) {\n"
+    "        pb.data[write_ptr++] = uint8_t((quant_idx >> (i * 8)) & 0xFF);\n"
+    "    }\n"
+    "    //pb.data[write_ptr++] = quant_idx;\n"
+    "\n"
+    "    /* Luma + 2 Chroma planes */\n"
+    "    #pragma unroll\n"
+    "    for (int p = 0; p < 3; p++) {\n"
+    "        int pad_s, pad_c;\n"
+    "        int bytes_start = write_ptr;\n"
+    "        pb.data[write_ptr++] = uint8_t(0);\n"
+    "        #pragma unroll\n"
+    "        for (int level = 0; level < wavelet_depth; level++) {\n"
+    "            ivec2 band_size = slice_dim >> level;\n"
+    "            #pragma unroll\n"
+    "            for (int orientation = int(level > 0); orientation < 4; orientation++) {\n"
+    "                write_ptr = encode_subband(slice_coord, band_size, quant[level][orientation],\n"
+    "                                           orientation, p, write_ptr);\n"
+    "            }\n"
+    "        }\n"
+    "        //flush_put_bits(pb);\n"
+    "        int bytes_len = /*put_bytes_output(pb)*/write_ptr - bytes_start - 1;\n"
+    "        if (p == 2) {\n"
+    "            int len_diff = slice_bytes_max - /*put_bytes_output(pb)*/write_ptr;\n"
+    "            pad_s = align((bytes_len + len_diff), size_scaler)/size_scaler;\n"
+    "            pad_c = (pad_s*size_scaler) - bytes_len;\n"
+    "        } else {\n"
+    "            pad_s = align(bytes_len, size_scaler)/size_scaler;\n"
+    "            pad_c = (pad_s*size_scaler) - bytes_len;\n"
+    "        }\n"
+    "        pb.data[bytes_start] = uint8_t(pad_s);\n"
+    "        /* vc2-reference uses that padding that decodes to '0' coeffs */\n"
+    "        for (int i = 0; i < pad_c; i++) {\n"
+    "            pb.data[write_ptr++] = uint8_t(0xFF);\n"
+    "        }\n"
+    "        // memset(put_bits_ptr(pb), 0xFF, pad_c);\n"
+    "        // skip_put_bytes(pb, pad_c);\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "void main() {\n"
+    "    /* Step 1. TODO: Figure out appropriate quant index for optimal slice size */\n"
+    "    int slice_bytes_max = (1280 * 720 * 3 / 2) / (num_slices.x * num_slices.y);\n"
+    "\n"
+    "    /* Step 2. Quantize and encode */\n"
+    "    encode_hq_slice(slice_bytes_max);\n"
+    "}\n";
+
+static void init_vulkan(AVCodecContext *avctx, const AVFrame *frame) {
+    VC2EncContext *s = avctx->priv_data;
+    FFVulkanContext *vkctx = &s->vkctx;
+    FFVkSPIRVShader *shd;
+    FFVkSPIRVCompiler *spv;
+    FFVulkanDescriptorSetBinding *desc;
+    uint8_t *spv_data;
+    size_t spv_len;
+    void *spv_opaque = NULL;
+    AVBufferRef* dwt_buf = NULL;
+    AVBufferRef* coef_buf[3];
+    FFVkBuffer* vk_buf = NULL;
+    VC2EncAuxData* ad = NULL;
+    Plane *p;
+    int i, level, err, ret;
+
+    AVHWDeviceContext *device = (AVHWDeviceContext *)frame->device_ref->data;
+    AVVulkanDeviceContext *hwctx = device->hwctx;
+
+    /* Initialize spirv compiler */
+    spv = ff_vk_spirv_init();
+    if (!spv) {
+        av_log(avctx, AV_LOG_ERROR, "Unable to initialize SPIR-V compiler!\n");
+        return;
+    }
+
+    ff_vk_qf_init(vkctx, &s->qf, VK_QUEUE_COMPUTE_BIT);
+
+    for (i = 0; i < 3; i++) {
+        p = &s->plane[i];
+        ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &coef_buf[i],
+                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
+                                      p->coef_stride*p->dwt_height*sizeof(dwtcoef),
+                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        vk_buf = (FFVkBuffer*)coef_buf[i]->data;
+        s->dwt_consts.p[i] = vk_buf->address;
+        s->enc_consts.p[i] = vk_buf->address;
+    }
+
+    /* Slices */
+    s->enc_consts.num_x = s->num_x;
+    s->enc_consts.num_y = s->num_y;
+
+    /* Create uniform buffer for encoder auxilary data. */
+    ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &dwt_buf,
+                                  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, NULL,
+                                  sizeof(VC2EncAuxData),
+                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    vk_buf = (FFVkBuffer*)coef_buf[i]->data;
+    ad = (VC2EncAuxData*)vk_buf->mapped_mem;
+    for (i = 0; i < 116; i++) {
+        const uint64_t qf = ff_dirac_qscale_tab[i];
+        const uint32_t m = av_log2(qf);
+        const uint32_t t = (1ULL << (m + 32)) / qf;
+        const uint32_t r = (t*qf + qf) & UINT32_MAX;
+        if (!(qf & (qf - 1))) {
+            ad->qmagic_lut[i][0] = 0xFFFFFFFF;
+            ad->qmagic_lut[i][1] = 0xFFFFFFFF;
+        } else if (r <= 1 << m) {
+            ad->qmagic_lut[i][0] = t + 1;
+            ad->qmagic_lut[i][1] = 0;
+        } else {
+            ad->qmagic_lut[i][0] = t;
+            ad->qmagic_lut[i][1] = t;
+        }
+    }
+    if (s->wavelet_depth <= 4 && s->quant_matrix == VC2_QM_DEF) {
+        s->custom_quant_matrix = 0;
+        for (level = 0; level < s->wavelet_depth; level++) {
+            ad->quant[level][0] = ff_dirac_default_qmat[s->wavelet_idx][level][0];
+            ad->quant[level][1] = ff_dirac_default_qmat[s->wavelet_idx][level][1];
+            ad->quant[level][2] = ff_dirac_default_qmat[s->wavelet_idx][level][2];
+            ad->quant[level][3] = ff_dirac_default_qmat[s->wavelet_idx][level][3];
+        }
+    }
+    memcpy(ad->ff_dirac_qscale_tab, ff_dirac_qscale_tab, sizeof(ff_dirac_qscale_tab));
+
+    /* Initialize encoder push data */
+    s->enc_consts.wavelet_depth = s->wavelet_depth;
+    s->enc_consts.slice_x = s->slice_width;
+    s->enc_consts.slice_y = s->slice_height;
+    s->dwt_consts.wavelet_depth = s->wavelet_depth;
+
+    ff_vk_exec_pool_init(vkctx, &s->qf, &s->e, s->qf.nb_queues * 4, 0, 0, 0, NULL);
+    ff_vk_shader_init(&s->dwt_pl, &s->shd, "haar_dwt", VK_SHADER_STAGE_COMPUTE_BIT, 0);
+    shd = &s->shd;
+
+    /* Build DWT descriptor set. */
+    desc = (FFVulkanDescriptorSetBinding[])
+        {
+            {
+                .name = "texture",
+                .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .mem_layout = "std430",
+                .dimensions = 2,
+                .elems = 3,
+                .stages = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+        };
+    RET(ff_vk_pipeline_descriptor_set_add(vkctx, &s->dwt_pl, shd, desc, 1, 0, 0));
+
+    /* Compile Haar shader */
+    av_bprintf(&shd->src, "%s", ff_source_dwt_comp);
+    RET(spv->compile_shader(spv, vkctx, shd, &spv_data, &spv_len, "main", &spv_opaque));
+    RET(ff_vk_shader_create(vkctx, shd, spv_data, spv_len, "main"));
+
+    /* Initialize Haar compute pipeline */
+    RET(ff_vk_init_compute_pipeline(vkctx, &s->dwt_pl, &s->shd));
+    RET(ff_vk_exec_pipeline_register(vkctx, &s->e, &s->dwt_pl));
+
+    /* Build encoder descriptor set. */
+    desc = (FFVulkanDescriptorSetBinding[])
+        {
+            {
+                .name        = "aux_data",
+                .type        = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .stages      = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+        };
+    RET(ff_vk_pipeline_descriptor_set_add(vkctx, &s->enc_pl, shd, desc, 1, 0, 0));
+
+    /* Compile encoding shader */
+    av_bprintf(&shd->src, "%s", ff_source_vc2enc_comp);
+    RET(spv->compile_shader(spv, vkctx, shd, &spv_data, &spv_len, "main", &spv_opaque));
+    RET(ff_vk_shader_create(vkctx, shd, spv_data, spv_len, "main"));
+
+    /* Initialize encoding compute pipeline */
+    RET(ff_vk_init_compute_pipeline(vkctx, &s->enc_pl, &s->shd));
+    RET(ff_vk_exec_pipeline_register(vkctx, &s->e, &s->enc_pl));
+
+fail:
+}
 
 /*
  * Transform basics for a 3 level transform
@@ -191,10 +531,15 @@ static av_cold int vc2_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
     int64_t r_bitrate = avctx->bit_rate >> (s->interlaced);
     FFVulkanContext *vkctx = &s->vkctx;
     FFVulkanFunctions *vk = &vkctx->vkfn;
-    FFVkExecContext *exec = ff_vk_exec_get(&s->e);
+    FFVkExecContext *exec;
+
+    if (!s->is_initialized) {
+        init_vulkan(avctx);
+    }
 
     /* Create an image view for each plane of source YUV420 frame */
     VkImageView views[AV_NUM_DATA_POINTERS];
+    exec = ff_vk_exec_get(&s->e);
     ff_vk_create_imageviews(&s->vkctx, exec, views, frame);
 
     s->avctx = avctx;
@@ -257,210 +602,6 @@ static av_cold int vc2_encode_end(AVCodecContext *avctx)
     return 0;
 }
 
-static const char *ff_source_dwt_comp =
-    "#version 450 core\n"
-    "#extension GL_EXT_buffer_reference : require\n"
-    "\n"
-    "#define SLICE_WIDTH 32\n"
-    "#define SLICE_HEIGHT 16\n"
-    "\n"
-    "layout(local_size_x = SLICE_WIDTH, local_size_y = SLICE_HEIGHT, local_size_z = 1) in;\n"
-    "\n"
-    "layout (set = 0, binding = 0, r32ui) uniform uimage2D planes[3];\n"
-    "\n"
-    "layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {\n"
-    "    uint coef_buf[];\n"
-    "};\n"
-    "\n"
-    "layout(push_constant, std140) uniform ComputeInfo {\n"
-    "    int wavelet_depth;\n"
-    "    int s;\n"
-    "    DwtCoef p[3];\n"
-    "};\n"
-    "\n"
-    "void dwt_haar(ivec2 dst_size, int plane_idx) {\n"
-    "    int stride = imageSize(planes[plane_idx]).x;\n"
-    "    ivec2 synth_size = dst_size << 1;\n"
-    "    ivec2 slice_base = ivec2(gl_WorkGroupID.xy) * ivec2(SLICE_WIDTH, SLICE_HEIGHT);\n"
-    "    ivec2 coord_in_slice = ivec2(gl_LocalInvocationID.xy);\n"
-    "\n"
-    "    /* For horizontal synth pass, each invocation handles a horizontal pair of pixels */\n"
-    "    ivec2 coord_in_slice_x = ivec2(gl_LocalInvocationID.xy) << ivec2(1, 0);\n"
-    "    if (all(lessThan(coord_in_slice_x, synth_size))) {\n"
-    "        ivec2 coord_x = slice_base + coord_in_slice_x;\n"
-    "        uint a = imageLoad(planes[plane_idx], coord_x).x;\n"
-    "        uint b = imageLoad(planes[plane_idx], coord_x + ivec2(1, 0)).x;\n"
-    "        uint dst_b = (b - a) * (1 << s);\n"
-    "        uint dst_a = a * (1 << s) + ((dst_b + 1) >> 1);\n"
-    "        p[plane_idx].coef_buf[coord_x.y * stride + coord_x.x] = dst_a;\n"
-    "        p[plane_idx].coef_buf[coord_x.y * stride + coord_x.x + 1] = dst_b;\n"
-    "    }\n"
-    "    memoryBarrier();\n"
-    "\n"
-    "    /* For vertical synth pass, each invocation handles a vertical pair of pixels */\n"
-    "    ivec2 coord_in_slice_y = ivec2(gl_LocalInvocationID.xy) << ivec2(0, 1);\n"
-    "    if (all(lessThan(coord_in_slice_y, synth_size))) {\n"
-    "        ivec2 coord_y = slice_base + coord_in_slice_y;\n"
-    "        uint a = imageLoad(planes[plane_idx], coord_y).x;\n"
-    "        uint b = imageLoad(planes[plane_idx], coord_y + ivec2(0, 1)).x;\n"
-    "        uint dst_b = b - a;\n"
-    "        uint dst_a = a + ((dst_b + 1) >> 1);\n"
-    "        p[plane_idx].coef_buf[coord_y.y * stride + coord_y.x] = dst_a;\n"
-    "        p[plane_idx].coef_buf[(coord_y.y + 1) * stride + coord_y.x + 1] = dst_b;\n"
-    "    }\n"
-    "    memoryBarrier();\n"
-    "\n"
-    "    /* Finally deinterleave result. Here each invocation is responsible for a single pixel */\n"
-    "    if (all(lessThan(coord_in_slice, synth_size))) {\n"
-    "        ivec2 coord = ivec2(gl_GlobalInvocationID.xy);\n"
-    "        ivec2 subband = coord_in_slice & int(1);\n"
-    "        ivec2 new_coord_in_slice = subband * dst_size + (coord_in_slice >> 1);\n"
-    "        ivec2 new_coord = slice_base + new_coord_in_slice;\n"
-    "        uint texel = p[plane_idx].coef_buf[coord.y * stride + coord.x];\n"
-    "        barrier();\n"
-    "        p[plane_idx].coef_buf[new_coord.y * stride + new_coord.x] = texel;\n"
-    "    }\n"
-    "}\n"
-    "\n"
-    "void main() {\n"
-    "    #pragma unroll\n"
-    "    for (int p = 0; p < 3; p++) {\n"
-    "        #pragma unroll\n"
-    "        for (int l = 1; l <= wavelet_depth; l++) {\n"
-    "            ivec2 dst_size = ivec2(SLICE_WIDTH, SLICE_HEIGHT) >> l;\n"
-    "            dwt_haar(dst_size, p);\n"
-    "        }\n"
-    "    }\n"
-                                        "}\n";
-
-static const char *ff_source_vc2enc_comp =
-    "#version 450 core\n"
-    "#extension GL_EXT_buffer_reference : require\n"
-    "#extension GL_EXT_shader_explicit_arithmetic_types : require\n"
-    "\n"
-    "// TODO: Process pixels in parallel\n"
-    "layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;\n"
-    "\n"
-    "#define MAX_DWT_LEVELS (5)\n"
-    "\n"
-    "layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {\n"
-    "    int coef_buf[];\n"
-    "};\n"
-    "layout(std430, buffer_reference, buffer_reference_align = 1) buffer BitBuf {\n"
-    "    uint8_t data[];\n"
-    "};\n"
-    "\n"
-    "layout(set = 0, binding = 0) uniform QMagicLut {\n"
-    "    int qmagic_lut[116][2];\n"
-    "    int quant[MAX_DWT_LEVELS][4];\n"
-    "    int ff_dirac_qscale_tab[116];\n"
-    "};\n"
-    "\n"
-    "layout(push_constant, std140) uniform ComputeInfo {\n"
-    "    int wavelet_depth;\n"
-    "    ivec2 slice_dim;\n"
-    "    int quant_idx;\n"
-    "    int size_scaler;\n"
-    "    int prefix_bytes;\n"
-    "    ivec2 num_slices;\n"
-    "    DwtCoef p[3];\n"
-    "    BitBuf pb;\n"
-    "};\n"
-    "\n"
-    "int encode_subband(ivec2 slice_coord, ivec2 band_size, int quant, int o, int plane, int write_index) {\n"
-    "    int left = band_size.x * (slice_coord.x+0) / num_slices.x;\n"
-    "    int right = band_size.x * (slice_coord.x+1) / num_slices.x;\n"
-    "    int top = band_size.y * (slice_coord.y+0) / num_slices.y;\n"
-    "    int bottom = band_size.y * (slice_coord.y+1) / num_slices.y;\n"
-    "\n"
-    "    int stride = slice_dim.x * num_slices.x;\n"
-    "    int band_ptr = int(o > 1) * band_size.y * stride + (o & 1) * band_size.x;\n"
-    "    int start = band_ptr + top * stride;\n"
-    "    const uint64_t q_m = uint64_t(qmagic_lut[quant][0]) << 2;\n"
-    "    const uint64_t q_a = uint64_t(qmagic_lut[quant][1]);\n"
-    "    const int q_s = int(log2(ff_dirac_qscale_tab[quant])) + 32;\n"
-    "\n"
-    "    for (int y = top; y < bottom; y++) {\n"
-    "        for (int x = left; x < right; x++) {\n"
-    "            int coef = p[plane].coef_buf[band_ptr + x];\n"
-    "            uint c_abs = uint((q_m * abs(coef) + q_a) >> q_s);\n"
-    "            for (int i = 0; i < 4; i++) {\n"
-    "                pb.data[write_index++] = uint8_t((c_abs >> (i * 8)) & 0xFF);\n"
-    "            }\n"
-    "            //if (c_abs != 0)\n"
-    "            //    put_bits(pb, 1, coef < 0);\n"
-    "        }\n"
-    "        band_ptr += stride;\n"
-    "    }\n"
-    "\n"
-    "    return write_index;\n"
-    "}\n"
-    "\n"
-    "int align(int x, int a) {\n"
-    "    return (x+a-1) & ~(a-1);\n"
-    "}\n"
-    "\n"
-    "void encode_hq_slice(int slice_bytes_max) {\n"
-    "    ivec2 slice_coord = ivec2(gl_GlobalInvocationID.xy);\n"
-    "    int slice_index = slice_coord.y * slice_dim.x + slice_coord.x;\n"
-    "    int write_ptr = slice_bytes_max * slice_index;\n"
-    "    int bit_ptr = 0;\n"
-    "\n"
-    "    /* The reference decoder ignores it, and its typical length is 0 */\n"
-    "    for (int i = 0; i < prefix_bytes; i++) {\n"
-    "        pb.data[write_ptr + i] = uint8_t(0);\n"
-    "    }\n"
-    "    write_ptr += prefix_bytes;\n"
-    "\n"
-    "    /* Write quant index for this slice */\n"
-    "    for (int i = 0; i < 4; i++) {\n"
-    "        pb.data[write_ptr++] = uint8_t((quant_idx >> (i * 8)) & 0xFF);\n"
-    "    }\n"
-    "    //pb.data[write_ptr++] = quant_idx;\n"
-    "\n"
-    "    /* Luma + 2 Chroma planes */\n"
-    "    #pragma unroll\n"
-    "    for (int p = 0; p < 3; p++) {\n"
-    "        int pad_s, pad_c;\n"
-    "        int bytes_start = write_ptr;\n"
-    "        pb.data[write_ptr++] = uint8_t(0);\n"
-    "        #pragma unroll\n"
-    "        for (int level = 0; level < wavelet_depth; level++) {\n"
-    "            ivec2 band_size = slice_dim >> level;\n"
-    "            #pragma unroll\n"
-    "            for (int orientation = int(level > 0); orientation < 4; orientation++) {\n"
-    "                write_ptr = encode_subband(slice_coord, band_size, quant[level][orientation],\n"
-    "                                           orientation, p, write_ptr);\n"
-    "            }\n"
-    "        }\n"
-    "        //flush_put_bits(pb);\n"
-    "        int bytes_len = /*put_bytes_output(pb)*/write_ptr - bytes_start - 1;\n"
-    "        if (p == 2) {\n"
-    "            int len_diff = slice_bytes_max - /*put_bytes_output(pb)*/write_ptr;\n"
-    "            pad_s = align((bytes_len + len_diff), size_scaler)/size_scaler;\n"
-    "            pad_c = (pad_s*size_scaler) - bytes_len;\n"
-    "        } else {\n"
-    "            pad_s = align(bytes_len, size_scaler)/size_scaler;\n"
-    "            pad_c = (pad_s*size_scaler) - bytes_len;\n"
-    "        }\n"
-    "        pb.data[bytes_start] = uint8_t(pad_s);\n"
-    "        /* vc2-reference uses that padding that decodes to '0' coeffs */\n"
-    "        for (int i = 0; i < pad_c; i++) {\n"
-    "            pb.data[write_ptr++] = uint8_t(0xFF);\n"
-    "        }\n"
-    "        // memset(put_bits_ptr(pb), 0xFF, pad_c);\n"
-    "        // skip_put_bytes(pb, pad_c);\n"
-    "    }\n"
-    "}\n"
-    "\n"
-    "void main() {\n"
-    "    /* Step 1. TODO: Figure out appropriate quant index for optimal slice size */\n"
-    "    int slice_bytes_max = (1280 * 720 * 3 / 2) / (num_slices.x * num_slices.y);\n"
-    "\n"
-    "    /* Step 2. Quantize and encode */\n"
-    "    encode_hq_slice(slice_bytes_max);\n"
-                                           "}\n";
-
 static av_cold int vc2_encode_init(AVCodecContext *avctx)
 {
     Plane *p;
@@ -469,19 +610,9 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
     const AVPixFmtDescriptor *fmt = av_pix_fmt_desc_get(avctx->pix_fmt);
     const int depth = fmt->comp[0].depth;
     VC2EncContext *s = avctx->priv_data;
-    FFVulkanContext *vkctx = &s->vkctx;
-    FFVkSPIRVShader *shd;
-    FFVkSPIRVCompiler *spv;
-    FFVulkanDescriptorSetBinding *desc;
-    uint8_t *spv_data;
-    size_t spv_len;
-    void *spv_opaque = NULL;
-    AVBufferRef* dwt_buf = NULL;
-    AVBufferRef* coef_buf[3];
-    FFVkBuffer* vk_buf = NULL;
-    VC2EncAuxData* ad = NULL;
 
     s->picture_number = 0;
+    s->is_initialized = 0;
 
     /* Total allowed quantization range */
     s->q_ceil    = DIRAC_MAX_QUANT_INDEX;
@@ -576,6 +707,7 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
     }
 
     /* Planes initialization */
+    AVHWFramesContext* hwfc = (AVHWFramesContext*)avctx->hw_frames_ctx->data;
     for (i = 0; i < 3; i++) {
         int w, h;
         p = &s->plane[i];
@@ -587,14 +719,6 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
         p->dwt_height = h = FFALIGN(p->height, (1 << s->wavelet_depth));
         p->coef_stride = FFALIGN(p->dwt_width, 32);
         p->coef_buf = av_mallocz(p->coef_stride*p->dwt_height*sizeof(dwtcoef));
-        ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &coef_buf[i],
-                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
-                                      p->coef_stride*p->dwt_height*sizeof(dwtcoef),
-                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        vk_buf = (FFVkBuffer*)coef_buf[i]->data;
-        s->dwt_consts.p[i] = vk_buf->address;
-        s->enc_consts.p[i] = vk_buf->address;
         if (!p->coef_buf)
             return AVERROR(ENOMEM);
         for (level = s->wavelet_depth-1; level >= 0; level--) {
@@ -621,111 +745,12 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
     /* Slices */
     s->num_x = s->plane[0].dwt_width/s->slice_width;
     s->num_y = s->plane[0].dwt_height/s->slice_height;
-    s->enc_consts.num_x = s->num_x;
-    s->enc_consts.num_y = s->num_y;
 
     s->slice_args = av_calloc(s->num_x*s->num_y, sizeof(SliceArgs));
     if (!s->slice_args)
         return AVERROR(ENOMEM);
 
-    /* Create uniform buffer for encoder auxilary data. */
-    ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &dwt_buf,
-                                  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, NULL,
-                                  sizeof(VC2EncAuxData),
-                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-    vk_buf = (FFVkBuffer*)coef_buf[i]->data;
-    ad = (VC2EncAuxData*)vk_buf->mapped_mem;
-    for (i = 0; i < 116; i++) {
-        const uint64_t qf = ff_dirac_qscale_tab[i];
-        const uint32_t m = av_log2(qf);
-        const uint32_t t = (1ULL << (m + 32)) / qf;
-        const uint32_t r = (t*qf + qf) & UINT32_MAX;
-        if (!(qf & (qf - 1))) {
-            ad->qmagic_lut[i][0] = 0xFFFFFFFF;
-            ad->qmagic_lut[i][1] = 0xFFFFFFFF;
-        } else if (r <= 1 << m) {
-            ad->qmagic_lut[i][0] = t + 1;
-            ad->qmagic_lut[i][1] = 0;
-        } else {
-            ad->qmagic_lut[i][0] = t;
-            ad->qmagic_lut[i][1] = t;
-        }
-    }
-    if (s->wavelet_depth <= 4 && s->quant_matrix == VC2_QM_DEF) {
-        s->custom_quant_matrix = 0;
-        for (level = 0; level < s->wavelet_depth; level++) {
-            ad->quant[level][0] = ff_dirac_default_qmat[s->wavelet_idx][level][0];
-            ad->quant[level][1] = ff_dirac_default_qmat[s->wavelet_idx][level][1];
-            ad->quant[level][2] = ff_dirac_default_qmat[s->wavelet_idx][level][2];
-            ad->quant[level][3] = ff_dirac_default_qmat[s->wavelet_idx][level][3];
-        }
-    }
-    memcpy(ad->ff_dirac_qscale_tab, ff_dirac_qscale_tab, sizeof(ff_dirac_qscale_tab));
-
-    /* Initialize encoder push data */
-    s->enc_consts.wavelet_depth = s->wavelet_depth;
-    s->enc_consts.slice_x = s->slice_width;
-    s->enc_consts.slice_y = s->slice_height;
-    s->dwt_consts.wavelet_depth = s->wavelet_depth;
-
-    /* Initialize spirv compiler */
-    spv = ff_vk_spirv_init();
-    if (!spv) {
-        av_log(avctx, AV_LOG_ERROR, "Unable to initialize SPIR-V compiler!\n");
-        return AVERROR_EXTERNAL;
-    }
-
-    ff_vk_qf_init(vkctx, &s->qf, VK_QUEUE_COMPUTE_BIT);
-    ff_vk_exec_pool_init(vkctx, &s->qf, &s->e, s->qf.nb_queues * 4, 0, 0, 0, NULL);
-    ff_vk_shader_init(&s->dwt_pl, &s->shd, "haar_dwt", VK_SHADER_STAGE_COMPUTE_BIT, 0);
-    shd = &s->shd;
-
-    /* Build DWT descriptor set. */
-    desc = (FFVulkanDescriptorSetBinding[])
-    {
-        {
-            .name = "texture",
-            .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .mem_layout = "std430",
-            .dimensions = 2,
-            .elems = 3,
-            .stages = VK_SHADER_STAGE_COMPUTE_BIT,
-        },
-    };
-    RET(ff_vk_pipeline_descriptor_set_add(vkctx, &s->dwt_pl, shd, desc, 1, 0, 0));
-
-    /* Compile Haar shader */
-    av_bprintf(&shd->src, "%s", ff_source_dwt_comp);
-    RET(spv->compile_shader(spv, vkctx, shd, &spv_data, &spv_len, "main", &spv_opaque));
-    RET(ff_vk_shader_create(vkctx, shd, spv_data, spv_len, "main"));
-
-    /* Initialize Haar compute pipeline */
-    RET(ff_vk_init_compute_pipeline(vkctx, &s->dwt_pl, &s->shd));
-    RET(ff_vk_exec_pipeline_register(vkctx, &s->e, &s->dwt_pl));
-
-    /* Build encoder descriptor set. */
-    desc = (FFVulkanDescriptorSetBinding[])
-    {
-        {
-            .name        = "aux_data",
-            .type        = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .stages      = VK_SHADER_STAGE_COMPUTE_BIT,
-        },
-    };
-    RET(ff_vk_pipeline_descriptor_set_add(vkctx, &s->enc_pl, shd, desc, 1, 0, 0));
-
-    /* Compile encoding shader */
-    av_bprintf(&shd->src, "%s", ff_source_vc2enc_comp);
-    RET(spv->compile_shader(spv, vkctx, shd, &spv_data, &spv_len, "main", &spv_opaque));
-    RET(ff_vk_shader_create(vkctx, shd, spv_data, spv_len, "main"));
-
-    /* Initialize encoding compute pipeline */
-    RET(ff_vk_init_compute_pipeline(vkctx, &s->enc_pl, &s->shd));
-    RET(ff_vk_exec_pipeline_register(vkctx, &s->e, &s->enc_pl));
-
-fail:
-    return err;
+    return 0;
 }
 
 #define VC2ENC_FLAGS (AV_OPT_FLAG_ENCODING_PARAM | AV_OPT_FLAG_VIDEO_PARAM)
