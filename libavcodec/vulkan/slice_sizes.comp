@@ -1,0 +1,162 @@
+#version 450 core
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+
+#define SLICE_WIDTH 32
+#define SLICE_HEIGHT 16
+
+layout(local_size_x = SLICE_WIDTH, local_size_y = SLICE_HEIGHT, local_size_z = 3) in;
+
+#define DIRAC_MAX_QUANT_INDEX 116
+
+struct SliceArgs {
+    int cache[DIRAC_MAX_QUANT_INDEX];
+    int x;
+    int y;
+    int quant_idx;
+    int bits_ceil;
+    int bits_floor;
+    int bytes;
+};
+
+layout(std430, buffer_reference) buffer SliceArgBuf {
+    SliceArgs args[];
+};
+
+layout(push_constant, std140) uniform ComputeInfo {
+    int wavelet_depth;
+    ivec2 slice_dim;
+    int quant_idx;
+    int size_scaler;
+    int prefix_bytes;
+    ivec2 num_slices;
+    DwtCoef p[3];
+    BitBuf pb;
+    SliceArgBuf slices;
+};
+
+int count_hq_slice(SliceArgs *slice, int quant_idx) {
+    int x, y;
+    uint8_t quants[MAX_DWT_LEVELS][4];
+    int bits = 0;
+    VC2EncContext *s = slice->ctx;
+    int idx = gl_WorkGroupID.y * gl_NumWorkgroups.x + gl_WorkGroupID.x;
+
+    SliceArgs slice = slices.args[idx];
+    if (slice.cache[quant_idx])
+        return slice.cache[quant_idx];
+
+    bits += 8*s->prefix_bytes;
+    bits += 8; /* quant_idx */
+
+    // slice_quantizers
+    for (level = 0; level < s->wavelet_depth; level++)
+        for (orientation = !!level; orientation < 4; orientation++)
+            quants[level][orientation] = FFMAX(quant_idx - s->quant[level][orientation], 0);
+
+    int bytes_written = 0;
+    bytes_written++;
+    for (int level = 0; level < wavelet_depth; level++) {
+        for (int orientation = int(level > 0); orientation < 4; orientation++) {
+            SubBand *b = &s->plane[p].band[level][orientation];
+
+            const int b_width = SLICE_WIDTH >> level;
+            const int b_height = SLICE_HEIGHT >> level;
+            const int s_x = gl_WorkGroupID.x;
+            const int s_y = gl_WorkGroupID.y;
+
+            const int q_idx = quants[level][orientation];
+            const uint64_t q_m = ((uint64_t)s->qmagic_lut[q_idx][0]) << 2;
+            const uint64_t q_a = s->qmagic_lut[q_idx][1];
+            const int q_s = av_log2(ff_dirac_qscale_tab[q_idx]) + 32;
+
+            const int left   = b_width  * s_x    / s->num_x;
+            const int right  = b_width  *(s_x+1) / s->num_x;
+            const int top    = b_height * s_y    / s->num_y;
+            const int bottom = b_height *(s_y+1) / s->num_y;
+
+            dwtcoef *buf = b->buf + top * b->stride;
+
+            for (y = top; y < bottom; y++) {
+                for (x = left; x < right; x++) {
+                    uint32_t c_abs = QUANT(FFABS(buf[x]), q_m, q_a, q_s);
+                    bits += count_vc2_ue_uint(c_abs);
+                    bits += !!c_abs;
+                }
+                buf += b->stride;
+            }
+        }
+    }
+
+
+    for (int p = 0; p < 3; p++) {
+        int bytes_start, bytes_len, pad_s, pad_c;
+        bytes_start = bits >> 3;
+        bits += 8;
+        for (level = 0; level < s->wavelet_depth; level++) {
+            for (orientation = !!level; orientation < 4; orientation++) {
+                SubBand *b = &s->plane[p].band[level][orientation];
+
+                const int q_idx = quants[level][orientation];
+                const uint64_t q_m = ((uint64_t)s->qmagic_lut[q_idx][0]) << 2;
+                const uint64_t q_a = s->qmagic_lut[q_idx][1];
+                const int q_s = av_log2(ff_dirac_qscale_tab[q_idx]) + 32;
+
+                const int left   = b->width  * slice->x    / num_slices.x;
+                const int right  = b->width  *(slice->x+1) / num_slices.x;
+                const int top    = b->height * slice->y    / num_slices.y;
+                const int bottom = b->height *(slice->y+1) / num_slices.y;
+
+                dwtcoef *buf = b->buf + top * b->stride;
+
+                for (y = top; y < bottom; y++) {
+                    for (x = left; x < right; x++) {
+                        uint32_t c_abs = QUANT(FFABS(buf[x]), q_m, q_a, q_s);
+                        bits += count_vc2_ue_uint(c_abs);
+                        bits += !!c_abs;
+                    }
+                    buf += b->stride;
+                }
+            }
+        }
+        bits += FFALIGN(bits, 8) - bits;
+        bytes_len = (bits >> 3) - bytes_start - 1;
+        pad_s = FFALIGN(bytes_len, s->size_scaler)/s->size_scaler;
+        pad_c = (pad_s*s->size_scaler) - bytes_len;
+        bits += pad_c*8;
+    }
+
+    slice->cache[quant_idx] = bits;
+
+    return bits;
+}
+
+int rate_control() {
+    SliceArgs *slice_dat = arg;
+    VC2EncContext *s = slice_dat->ctx;
+    const int top = slice_dat->bits_ceil;
+    const int bottom = slice_dat->bits_floor;
+    int quant_buf[2] = {-1, -1};
+    int quant = slice_dat->quant_idx, step = 1;
+    int bits_last, bits = count_hq_slice(slice_dat, quant);
+    while ((bits > top) || (bits < bottom)) {
+        const int signed_step = bits > top ? +step : -step;
+        quant  = av_clip(quant + signed_step, 0, s->q_ceil-1);
+        bits   = count_hq_slice(slice_dat, quant);
+        if (quant_buf[1] == quant) {
+            quant = FFMAX(quant_buf[0], quant);
+            bits  = quant == quant_buf[0] ? bits_last : bits;
+            break;
+        }
+        step         = av_clip(step/2, 1, (s->q_ceil-1)/2);
+        quant_buf[1] = quant_buf[0];
+        quant_buf[0] = quant;
+        bits_last    = bits;
+    }
+    slice_dat->quant_idx = av_clip(quant, 0, s->q_ceil-1);
+    slice_dat->bytes = SSIZE_ROUND(bits >> 3);
+    return 0;
+}
+
+void main() {
+
+}
