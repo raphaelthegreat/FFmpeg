@@ -254,9 +254,6 @@ static void init_vulkan(AVCodecContext *avctx, const AVFrame *frame) {
     Plane *p;
     int i, level, err, ret;
 
-    AVHWDeviceContext *device = (AVHWDeviceContext *)frame->device_ref->data;
-    AVVulkanDeviceContext *hwctx = device->hwctx;
-
     /* Initialize spirv compiler */
     spv = ff_vk_spirv_init();
     if (!spv) {
@@ -534,7 +531,7 @@ static av_cold int vc2_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
     FFVkExecContext *exec;
 
     if (!s->is_initialized) {
-        init_vulkan(avctx);
+        init_vulkan(avctx, frame);
     }
 
     /* Create an image view for each plane of source YUV420 frame */
