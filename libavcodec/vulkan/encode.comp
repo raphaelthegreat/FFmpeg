@@ -14,12 +14,6 @@ layout(std430, buffer_reference, buffer_reference_align = 1) buffer BitBuf {
     uint8_t data[];
 };
 
-layout(set = 0, binding = 0) uniform QMagicLut {
-    int qmagic_lut[116][2];
-    int quant[MAX_DWT_LEVELS][4];
-    int ff_dirac_qscale_tab[116];
-};
-
 layout(push_constant, std140) uniform ComputeInfo {
     int wavelet_depth;
     ivec2 slice_dim;
@@ -40,14 +34,12 @@ int encode_subband(ivec2 slice_coord, ivec2 band_size, int quant, int o, int pla
     int stride = slice_dim.x * num_slices.x;
     int band_ptr = int(o > 1) * band_size.y * stride + (o & 1) * band_size.x;
     int start = band_ptr + top * stride;
-    const uint64_t q_m = uint64_t(qmagic_lut[quant][0]) << 2;
-    const uint64_t q_a = uint64_t(qmagic_lut[quant][1]);
     const int q_s = int(log2(ff_dirac_qscale_tab[quant])) + 32;
 
     for (int y = top; y < bottom; y++) {
         for (int x = left; x < right; x++) {
             int coef = p[plane].coef_buf[band_ptr + x];
-            uint c_abs = uint((q_m * abs(coef) + q_a) >> q_s);
+            uint c_abs = uint((abs(coef) / quant) >> q_s);
             for (int i = 0; i < 4; i++) {
                 pb.data[write_index++] = uint8_t((c_abs >> (i * 8)) & 0xFF);
             }

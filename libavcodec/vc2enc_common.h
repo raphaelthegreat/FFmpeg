@@ -129,7 +129,6 @@ typedef struct VC2DwtPushData {
 } VC2DwtPushData;
 
 typedef struct VC2EncAuxData {
-    uint32_t qmagic_lut[116][2];
     uint32_t quant[MAX_DWT_LEVELS][4];
     int ff_dirac_qscale_tab[116];
 } VC2EncAuxData;
@@ -217,7 +216,6 @@ typedef struct VC2EncContext {
 
     VC2EncPushData enc_consts;
     VC2DwtPushData dwt_consts;
-    int is_initialized;
 } VC2EncContext;
 
 void encode_parse_info(VC2EncContext *s, enum DiracParseCodes pcode);
