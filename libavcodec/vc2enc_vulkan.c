@@ -62,6 +62,7 @@ static void init_vulkan(AVCodecContext *avctx) {
     vkctx->extensions = ff_vk_extensions_to_mask(vkctx->hwctx->enabled_dev_extensions,
                                                  vkctx->hwctx->nb_enabled_dev_extensions);
     ff_vk_load_functions(vkctx->device, &vkctx->vkfn, vkctx->extensions, 1, 1);
+    ff_vk_load_props(vkctx);
 
     /* Initialize spirv compiler */
     spv = ff_vk_spirv_init();
@@ -78,7 +79,7 @@ static void init_vulkan(AVCodecContext *avctx) {
                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
                                       p->coef_stride*p->dwt_height*sizeof(dwtcoef),
-                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
         vk_buf = (FFVkBuffer*)coef_buf[i]->data;
         s->dwt_consts.p[i] = vk_buf->address;
         s->enc_consts.p[i] = vk_buf->address;
@@ -94,7 +95,8 @@ static void init_vulkan(AVCodecContext *avctx) {
                                   sizeof(VC2EncAuxData),
                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-    vk_buf = (FFVkBuffer*)coef_buf[i]->data;
+    vk_buf = (FFVkBuffer*)dwt_buf->data;
+    s->enc_consts.luts = vk_buf->address;
     ad = (VC2EncAuxData*)vk_buf->mapped_mem;
     if (s->wavelet_depth <= 4 && s->quant_matrix == VC2_QM_DEF) {
         s->custom_quant_matrix = 0;
@@ -119,17 +121,19 @@ static void init_vulkan(AVCodecContext *avctx) {
 
     /* Build DWT descriptor set. */
     desc = (FFVulkanDescriptorSetBinding[])
+    {
         {
-            {
-                .name = "texture",
-                .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .mem_layout = "std430",
-                .dimensions = 2,
-                .elems = 3,
-                .stages = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-        };
+            .name = "textures",
+            .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .mem_layout = "r32f",
+            .dimensions = 2,
+            .elems = 3,
+            .stages = VK_SHADER_STAGE_COMPUTE_BIT,
+        },
+    };
     RET(ff_vk_pipeline_descriptor_set_add(vkctx, &s->dwt_pl, shd, desc, 1, 0, 0));
+    ff_vk_add_push_constant(&s->dwt_pl, 0, sizeof(VC2DwtPushData), VK_SHADER_STAGE_COMPUTE_BIT);
+
     GLSLD(ff_source_dwt_comp);
 
     /* Compile Haar shader */
@@ -140,23 +144,11 @@ static void init_vulkan(AVCodecContext *avctx) {
     RET(ff_vk_init_compute_pipeline(vkctx, &s->dwt_pl, &s->shd));
     RET(ff_vk_exec_pipeline_register(vkctx, &s->e, &s->dwt_pl));
 
+    ff_vk_shader_init(&s->enc_pl, &s->enc_shd, "encode", VK_SHADER_STAGE_COMPUTE_BIT, 0);
+    shd = &s->enc_shd;
+
     /* Build encoder descriptor set. */
-    desc = (FFVulkanDescriptorSetBinding[])
-    {
-        {
-            .name        = "quant_buffer",
-            .type        = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .stages      = VK_SHADER_STAGE_COMPUTE_BIT,
-            .buf_content = "int quant[MAX_DWT_LEVELS][4];",
-        },
-        {
-            .name        = "ff_dirac_qscale_tab",
-            .type        = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .stages      = VK_SHADER_STAGE_COMPUTE_BIT,
-            .buf_content = "int ff_dirac_qscale_tab[116];",
-        },
-    };
-    RET(ff_vk_pipeline_descriptor_set_add(vkctx, &s->enc_pl, shd, desc, 1, 0, 0));
+    ff_vk_add_push_constant(&s->enc_pl, 0, sizeof(VC2EncPushData), VK_SHADER_STAGE_COMPUTE_BIT);
 
     /* Compile encoding shader */
     GLSLD(ff_source_encode_comp);
@@ -164,7 +156,7 @@ static void init_vulkan(AVCodecContext *avctx) {
     RET(ff_vk_shader_create(vkctx, shd, spv_data, spv_len, "main"));
 
     /* Initialize encoding compute pipeline */
-    RET(ff_vk_init_compute_pipeline(vkctx, &s->enc_pl, &s->shd));
+    RET(ff_vk_init_compute_pipeline(vkctx, &s->enc_pl, shd));
     RET(ff_vk_exec_pipeline_register(vkctx, &s->e, &s->enc_pl));
 
 fail:
@@ -228,12 +220,11 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, const AVFrame *fr
     vk->CmdDispatch(exec->buf, s->num_x, s->num_y, 1);
 }
 
-static void vulkan_encode_slices(VC2EncContext *s)
+static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
 {
     uint8_t *buf;
     FFVulkanContext *vkctx = &s->vkctx;
     FFVulkanFunctions *vk = &vkctx->vkfn;
-    FFVkExecContext *exec = ff_vk_exec_get(&s->e);
 
     flush_put_bits(&s->pb);
     buf = put_bits_ptr(&s->pb);
@@ -253,7 +244,7 @@ static void vulkan_encode_slices(VC2EncContext *s)
 
     /* Submit command buffer and wait for completion */
     ff_vk_exec_submit(vkctx, exec);
-    ff_vk_exec_wait(vkctx, exec);
+    //ff_vk_exec_wait(vkctx, exec);
 }
 
 static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
@@ -310,7 +301,7 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
     encode_picture_start(s);
 
     /* Encode slices */
-    vulkan_encode_slices(s);
+    vulkan_encode_slices(s, exec);
 
     /* End sequence */
     encode_parse_info(s, DIRAC_PCODE_END_SEQ);

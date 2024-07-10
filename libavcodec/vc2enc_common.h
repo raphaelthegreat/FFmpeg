@@ -144,6 +144,7 @@ typedef struct VC2EncPushData {
     int num_y;
     VkDeviceAddress p[3];
     VkDeviceAddress pb;
+    VkDeviceAddress luts;
 } VC2EncPushData;
 
 typedef struct VC2EncContext {
@@ -212,6 +213,7 @@ typedef struct VC2EncContext {
     FFVulkanPipeline dwt_pl;
     FFVulkanPipeline enc_pl;
     FFVkSPIRVShader shd;
+    FFVkSPIRVShader enc_shd;
     AVBufferPool* dwt_buf_pool;
 
     VC2EncPushData enc_consts;

@@ -1,7 +1,6 @@
 // Generated from libavcodec/vulkan/dwt.comp
 const char *ff_source_dwt_comp =
-"#version 450 core\n"
-"#extension GL_EXT_buffer_reference : require\n"
+"#extension GL_EXT_scalar_block_layout : require\n"
 "\n"
 "#define SLICE_WIDTH 32\n"
 "#define SLICE_HEIGHT 16\n"

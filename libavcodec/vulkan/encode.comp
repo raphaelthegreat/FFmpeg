@@ -1,5 +1,3 @@
-#version 450 core
-#extension GL_EXT_buffer_reference : require
 #extension GL_EXT_shader_explicit_arithmetic_types : require
 
 // TODO: Process pixels in parallel
@@ -13,8 +11,12 @@ layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
 layout(std430, buffer_reference, buffer_reference_align = 1) buffer BitBuf {
     uint8_t data[];
 };
+layout(std430, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
+    int quant[5][4];
+    int ff_dirac_qscale_tab[116];
+};
 
-layout(push_constant, std140) uniform ComputeInfo {
+layout(push_constant, std430) uniform ComputeInfo {
     int wavelet_depth;
     ivec2 slice_dim;
     int quant_idx;
@@ -23,6 +25,7 @@ layout(push_constant, std140) uniform ComputeInfo {
     ivec2 num_slices;
     DwtCoef p[3];
     BitBuf pb;
+    QuantLuts luts;
 };
 
 int encode_subband(ivec2 slice_coord, ivec2 band_size, int quant, int o, int plane, int write_index) {
@@ -34,7 +37,7 @@ int encode_subband(ivec2 slice_coord, ivec2 band_size, int quant, int o, int pla
     int stride = slice_dim.x * num_slices.x;
     int band_ptr = int(o > 1) * band_size.y * stride + (o & 1) * band_size.x;
     int start = band_ptr + top * stride;
-    const int q_s = int(log2(ff_dirac_qscale_tab[quant])) + 32;
+    const int q_s = int(log2(luts.ff_dirac_qscale_tab[quant])) + 32;
 
     for (int y = top; y < bottom; y++) {
         for (int x = left; x < right; x++) {
@@ -85,7 +88,7 @@ void encode_hq_slice(int slice_bytes_max) {
             ivec2 band_size = slice_dim >> level;
             #pragma unroll
             for (int orientation = int(level > 0); orientation < 4; orientation++) {
-                write_ptr = encode_subband(slice_coord, band_size, quant[level][orientation],
+                write_ptr = encode_subband(slice_coord, band_size, luts.quant[level][orientation],
                                            orientation, p, write_ptr);
             }
         }

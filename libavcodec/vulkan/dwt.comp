@@ -1,5 +1,4 @@
-#version 450 core
-#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
 
 #define SLICE_WIDTH 32
 #define SLICE_HEIGHT 16
