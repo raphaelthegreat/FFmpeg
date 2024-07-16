@@ -9,7 +9,7 @@ layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
     int coef_buf[];
 };
 layout(std430, buffer_reference, buffer_reference_align = 1) buffer BitBuf {
-    uint8_t data[];
+    uint data[];
 };
 layout(std430, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
     int quant[5][4];
@@ -17,18 +17,74 @@ layout(std430, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
 };
 
 layout(push_constant, std430) uniform ComputeInfo {
-    int wavelet_depth;
+    DwtCoef p[4];
+    BitBuf pb;
+    QuantLuts luts;
+    ivec2 num_slices;
     ivec2 slice_dim;
+    int wavelet_depth;
     int quant_idx;
     int size_scaler;
     int prefix_bytes;
-    ivec2 num_slices;
-    DwtCoef p[3];
-    BitBuf pb;
-    QuantLuts luts;
 };
 
-int encode_subband(ivec2 slice_coord, ivec2 band_size, int quant, int o, int plane, int write_index) {
+uint bit_buf = 0;
+uint bit_left = 32;
+uint write_ptr = 0;
+
+void put_bits(int n, int value) {
+    if (n < bit_left) {
+        bit_buf = (bit_buf << n) | value;
+        bit_left -= n;
+    } else {
+        bit_buf <<= bit_left;
+        bit_buf |= value >> (n - bit_left);
+        pb.data[write_ptr++] = bit_buf;
+        bit_left += 32 - n;
+        bit_buf = value;
+    }
+}
+
+int put_vc2_ue_uint(int val) {
+    int pbits = 0, topbit = 1, maxval = 1;
+    if (!val++) {
+        put_bits(1, 1);
+        return;
+    }
+
+    while (val > maxval) {
+        topbit <<= 1;
+        maxval <<= 1;
+        maxval |=  1;
+    }
+
+    int bits = log2(topbit);
+    for (int i = 0; i < bits; i++) {
+        topbit >>= 1;
+        pbits <<= 2;
+        if (val & topbit) {
+            pbits |= 0x1;
+        }
+    }
+
+    put_bits(bits * 2 + 1, (pbits << 1) | 1);
+}
+
+void flush_put_bits() {
+    pb.data[write_ptr++] = bit_buf;
+    bit_buf = 0;
+}
+
+int put_bytes_output() {
+    return write_ptr * 4;
+}
+
+void skip_put_bytes(int n) {
+    write_ptr += (n >> 2);
+    bit_left = (n % 4) * 8;
+}
+
+void encode_subband(ivec2 slice_coord, ivec2 band_size, int quant, int o, int plane) {
     int left = band_size.x * (slice_coord.x+0) / num_slices.x;
     int right = band_size.x * (slice_coord.x+1) / num_slices.x;
     int top = band_size.y * (slice_coord.y+0) / num_slices.y;
@@ -43,16 +99,12 @@ int encode_subband(ivec2 slice_coord, ivec2 band_size, int quant, int o, int pla
         for (int x = left; x < right; x++) {
             int coef = p[plane].coef_buf[band_ptr + x];
             uint c_abs = uint((abs(coef) / quant) >> q_s);
-            for (int i = 0; i < 4; i++) {
-                pb.data[write_index++] = uint8_t((c_abs >> (i * 8)) & 0xFF);
-            }
-            //if (c_abs != 0)
-            //    put_bits(pb, 1, coef < 0);
+            put_vc2_ue_uint(c_abs);
+            if (c_abs != 0)
+                put_bits(1, int(coef < 0));
         }
         band_ptr += stride;
     }
-
-    return write_index;
 }
 
 int align(int x, int a) {
@@ -62,53 +114,45 @@ int align(int x, int a) {
 void encode_hq_slice(int slice_bytes_max) {
     ivec2 slice_coord = ivec2(gl_GlobalInvocationID.xy);
     int slice_index = slice_coord.y * slice_dim.x + slice_coord.x;
-    int write_ptr = slice_bytes_max * slice_index;
-    int bit_ptr = 0;
-
-    /* The reference decoder ignores it, and its typical length is 0 */
-    for (int i = 0; i < prefix_bytes; i++) {
-        pb.data[write_ptr + i] = uint8_t(0);
-    }
-    write_ptr += prefix_bytes;
+    write_ptr = slice_bytes_max * slice_index;
 
     /* Write quant index for this slice */
-    for (int i = 0; i < 4; i++) {
-        pb.data[write_ptr++] = uint8_t((quant_idx >> (i * 8)) & 0xFF);
-    }
-    //pb.data[write_ptr++] = quant_idx;
+    put_bits(8, quant_idx);
 
     /* Luma + 2 Chroma planes */
     #pragma unroll
     for (int p = 0; p < 3; p++) {
         int pad_s, pad_c;
-        int bytes_start = write_ptr;
-        pb.data[write_ptr++] = uint8_t(0);
+        int write_start = write_ptr;
+        put_bits(8, 0);
         #pragma unroll
         for (int level = 0; level < wavelet_depth; level++) {
             ivec2 band_size = slice_dim >> level;
             #pragma unroll
             for (int orientation = int(level > 0); orientation < 4; orientation++) {
-                write_ptr = encode_subband(slice_coord, band_size, luts.quant[level][orientation],
-                                           orientation, p, write_ptr);
+                encode_subband(slice_coord, band_size, luts.quant[level][orientation],
+                               orientation, p);
             }
         }
-        //flush_put_bits(pb);
-        int bytes_len = /*put_bytes_output(pb)*/write_ptr - bytes_start - 1;
+        flush_put_bits();
+        int bytes_len = (write_ptr - write_start) * 4 - 1;
         if (p == 2) {
-            int len_diff = slice_bytes_max - /*put_bytes_output(pb)*/write_ptr;
+            int len_diff = slice_bytes_max - put_bytes_output();
             pad_s = align((bytes_len + len_diff), size_scaler)/size_scaler;
             pad_c = (pad_s*size_scaler) - bytes_len;
         } else {
             pad_s = align(bytes_len, size_scaler)/size_scaler;
             pad_c = (pad_s*size_scaler) - bytes_len;
         }
-        pb.data[bytes_start] = uint8_t(pad_s);
+        /* Write the lower 8 bytes of write_start with pad_s */
+        pb.data[write_start] &= int(~0xFF);
+        pb.data[write_start] |= int(pad_s & 0xFF);
         /* vc2-reference uses that padding that decodes to '0' coeffs */
         for (int i = 0; i < pad_c; i++) {
             pb.data[write_ptr++] = uint8_t(0xFF);
         }
         // memset(put_bits_ptr(pb), 0xFF, pad_c);
-        // skip_put_bytes(pb, pad_c);
+        skip_put_bytes(pb, pad_c);
     }
 }
 

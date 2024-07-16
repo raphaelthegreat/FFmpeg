@@ -134,17 +134,17 @@ typedef struct VC2EncAuxData {
 } VC2EncAuxData;
 
 typedef struct VC2EncPushData {
-    int wavelet_depth;
+    VkDeviceAddress p[4];
+    VkDeviceAddress pb;
+    VkDeviceAddress luts;
+    int num_x;
+    int num_y;
     int slice_x;
     int slice_y;
+    int wavelet_depth;
     int quant_idx;
     int size_scaler;
     int prefix_bytes;
-    int num_x;
-    int num_y;
-    VkDeviceAddress p[3];
-    VkDeviceAddress pb;
-    VkDeviceAddress luts;
 } VC2EncPushData;
 
 typedef struct VC2EncContext {

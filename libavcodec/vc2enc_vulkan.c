@@ -217,7 +217,7 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, const AVFrame *fr
                            0, sizeof(VC2DwtPushData), &s->dwt_consts);
 
     /* End of Haar DWT pass */
-    vk->CmdDispatch(exec->buf, s->num_x, s->num_y, 1);
+    //vk->CmdDispatch(exec->buf, s->num_x, s->num_y, 1);
 }
 
 static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
@@ -244,7 +244,6 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
 
     /* Submit command buffer and wait for completion */
     ff_vk_exec_submit(vkctx, exec);
-    //ff_vk_exec_wait(vkctx, exec);
 }
 
 static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
@@ -257,6 +256,10 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
     FFVulkanContext *vkctx = &s->vkctx;
     FFVulkanFunctions *vk = &vkctx->vkfn;
     FFVkExecContext *exec = ff_vk_exec_get(&s->e);
+
+    ret = ff_vk_exec_add_dep_frame(vkctx, exec, frame,
+                                   VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                   VK_PIPELINE_STAGE_2_TRANSFER_BIT);
 
     /* Perform Haar DWT pass on the inpute frame. */
     dwt_plane(s, exec, frame);
