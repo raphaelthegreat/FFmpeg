@@ -30,7 +30,7 @@ layout(push_constant, std430) uniform ComputeInfo {
 
 uint bit_buf = 0;
 uint bit_left = 32;
-uint write_ptr = 0;
+int write_ptr = 0;
 
 void put_bits(int n, int value) {
     if (n < bit_left) {
@@ -45,9 +45,9 @@ void put_bits(int n, int value) {
     }
 }
 
-int put_vc2_ue_uint(int val) {
+void put_vc2_ue_uint(int val) {
     int pbits = 0, topbit = 1, maxval = 1;
-    if (!val++) {
+    if (val++ == 0) {
         put_bits(1, 1);
         return;
     }
@@ -58,11 +58,11 @@ int put_vc2_ue_uint(int val) {
         maxval |=  1;
     }
 
-    int bits = log2(topbit);
+    int bits = int(log2(topbit));
     for (int i = 0; i < bits; i++) {
         topbit >>= 1;
         pbits <<= 2;
-        if (val & topbit) {
+        if ((val & topbit) != 0) {
             pbits |= 0x1;
         }
     }
@@ -98,7 +98,7 @@ void encode_subband(ivec2 slice_coord, ivec2 band_size, int quant, int o, int pl
     for (int y = top; y < bottom; y++) {
         for (int x = left; x < right; x++) {
             int coef = p[plane].coef_buf[band_ptr + x];
-            uint c_abs = uint((abs(coef) / quant) >> q_s);
+            int c_abs = int((abs(coef) / quant) >> q_s);
             put_vc2_ue_uint(c_abs);
             if (c_abs != 0)
                 put_bits(1, int(coef < 0));
@@ -145,14 +145,14 @@ void encode_hq_slice(int slice_bytes_max) {
             pad_c = (pad_s*size_scaler) - bytes_len;
         }
         /* Write the lower 8 bytes of write_start with pad_s */
-        pb.data[write_start] &= int(~0xFF);
-        pb.data[write_start] |= int(pad_s & 0xFF);
+        pb.data[write_start] &= ~0xFF;
+        pb.data[write_start] |= pad_s & 0xFF;
         /* vc2-reference uses that padding that decodes to '0' coeffs */
         for (int i = 0; i < pad_c; i++) {
             pb.data[write_ptr++] = uint8_t(0xFF);
         }
         // memset(put_bits_ptr(pb), 0xFF, pad_c);
-        skip_put_bytes(pb, pad_c);
+        skip_put_bytes(pad_c);
     }
 }
 

@@ -76,8 +76,7 @@ static void init_vulkan(AVCodecContext *avctx) {
     for (i = 0; i < 3; i++) {
         p = &s->plane[i];
         ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &coef_buf[i],
-                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
+                                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
                                       p->coef_stride*p->dwt_height*sizeof(dwtcoef),
                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
         vk_buf = (FFVkBuffer*)coef_buf[i]->data;
@@ -204,7 +203,6 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, const AVFrame *fr
     VkImageView views[AV_NUM_DATA_POINTERS];
 
     /* Haar DWT pipeline */
-    ff_vk_exec_start(vkctx, exec);
     ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_pl);
 
     /* Bind plane images */
@@ -217,7 +215,7 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, const AVFrame *fr
                            0, sizeof(VC2DwtPushData), &s->dwt_consts);
 
     /* End of Haar DWT pass */
-    //vk->CmdDispatch(exec->buf, s->num_x, s->num_y, 1);
+    vk->CmdDispatch(exec->buf, s->num_x, s->num_y, 1);
 }
 
 static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
@@ -227,7 +225,7 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
     FFVulkanFunctions *vk = &vkctx->vkfn;
 
     flush_put_bits(&s->pb);
-    buf = put_bits_ptr(&s->pb);
+    s->enc_consts.pb += put_bytes_count(&s->pb, 0);
 
     /* Encoder pipeline */
     ff_vk_exec_bind_pipeline(vkctx, exec, &s->enc_pl);
@@ -244,6 +242,7 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
 
     /* Submit command buffer and wait for completion */
     ff_vk_exec_submit(vkctx, exec);
+    ff_vk_exec_wait(vkctx, exec);
 }
 
 static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
@@ -257,12 +256,13 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
     FFVulkanFunctions *vk = &vkctx->vkfn;
     FFVkExecContext *exec = ff_vk_exec_get(&s->e);
 
+    ff_vk_exec_start(vkctx, exec);
     ret = ff_vk_exec_add_dep_frame(vkctx, exec, frame,
                                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                    VK_PIPELINE_STAGE_2_TRANSFER_BIT);
 
     /* Perform Haar DWT pass on the inpute frame. */
-    dwt_plane(s, exec, frame);
+    //dwt_plane(s, exec, frame);
 
     /* Calculate per-slice quantizers and sizes */
     /* TODO: Properly implement this */
@@ -270,6 +270,34 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
 
     /* Get a pooled device local host visible buffer for writing output data */
     if (field < 2) {
+        /*ret = ff_get_encode_buffer(s->avctx, avpkt,
+                                   max_frame_bytes << s->interlaced, 0);
+
+        VkExternalMemoryBufferCreateInfo create_desc = {
+            .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+        };
+
+        VkImportMemoryHostPointerInfoEXT import_desc = {
+            .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
+            .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+            .pHostPointer = avpkt->data,
+        };
+
+        VkMemoryHostPointerPropertiesEXT p_props = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT,
+        };
+
+        ret = vk->GetMemoryHostPointerPropertiesEXT(vkctx->hwctx->act_dev,
+                                                    import_desc.handleType,
+                                                    import_desc.pHostPointer,
+                                                    &p_props);
+        ret = ff_vk_create_avbuf(vkctx, &avpkt_buf, max_frame_bytes << s->interlaced,
+                                 &create_desc, &import_desc,
+                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        buf_vk = (FFVkBuffer *)avpkt_buf->data;*/
+
         ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &avpkt_buf,
                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
@@ -278,6 +306,7 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
         avpkt->buf = avpkt_buf;
         avpkt->data = avpkt_buf->data;
+        *avpkt->data = 0;
         avpkt->size = max_frame_bytes << s->interlaced;
         buf_vk = (FFVkBuffer *)avpkt_buf->data;
         s->enc_consts.pb = buf_vk->address;
@@ -366,9 +395,6 @@ static av_cold int vc2_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
         if (ret)
             return ret;
     }
-
-    flush_put_bits(&s->pb);
-    av_shrink_packet(avpkt, put_bytes_output(&s->pb));
 
     *got_packet = 1;
 
