@@ -11,7 +11,7 @@ layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
     uint coef_buf[];
 };
 
-layout(push_constant, std140) uniform ComputeInfo {
+layout(push_constant, scalar) uniform ComputeInfo {
     int wavelet_depth;
     int s;
     DwtCoef p[3];
@@ -67,7 +67,7 @@ void main() {
         #pragma unroll
         for (int l = 1; l <= wavelet_depth; l++) {
             ivec2 dst_size = ivec2(SLICE_WIDTH, SLICE_HEIGHT) >> l;
-            dwt_haar(dst_size, p);
+            //dwt_haar(dst_size, p);
         }
     }
 }

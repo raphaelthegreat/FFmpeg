@@ -262,7 +262,7 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
                                    VK_PIPELINE_STAGE_2_TRANSFER_BIT);
 
     /* Perform Haar DWT pass on the inpute frame. */
-    //dwt_plane(s, exec, frame);
+    dwt_plane(s, exec, frame);
 
     /* Calculate per-slice quantizers and sizes */
     /* TODO: Properly implement this */
@@ -299,16 +299,14 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
         buf_vk = (FFVkBuffer *)avpkt_buf->data;*/
 
         ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &avpkt_buf,
-                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
                                       max_frame_bytes << s->interlaced,
                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
         avpkt->buf = avpkt_buf;
-        avpkt->data = avpkt_buf->data;
-        *avpkt->data = 0;
-        avpkt->size = max_frame_bytes << s->interlaced;
         buf_vk = (FFVkBuffer *)avpkt_buf->data;
+        avpkt->data = buf_vk->mapped_mem;
+        avpkt->size = max_frame_bytes << s->interlaced;
         s->enc_consts.pb = buf_vk->address;
 
         if (ret) {

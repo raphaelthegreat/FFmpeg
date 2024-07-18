@@ -161,5 +161,5 @@ void main() {
     int slice_bytes_max = (1280 * 720 * 3 / 2) / (num_slices.x * num_slices.y);
 
     /* Step 2. Quantize and encode */
-    encode_hq_slice(slice_bytes_max);
+    //encode_hq_slice(slice_bytes_max);
 }

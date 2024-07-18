@@ -163,5 +163,5 @@ const char *ff_source_encode_comp =
 "    int slice_bytes_max = (1280 * 720 * 3 / 2) / (num_slices.x * num_slices.y);\n"
 "\n"
 "    /* Step 2. Quantize and encode */\n"
-"    encode_hq_slice(slice_bytes_max);\n"
+"    //encode_hq_slice(slice_bytes_max);\n"
 "}\n";
