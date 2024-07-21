@@ -122,7 +122,7 @@ static void init_vulkan(AVCodecContext *avctx) {
     desc = (FFVulkanDescriptorSetBinding[])
     {
         {
-            .name = "textures",
+            .name = "planes",
             .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             .mem_layout = "r32f",
             .dimensions = 2,
@@ -202,13 +202,13 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, const AVFrame *fr
     FFVulkanFunctions *vk = &vkctx->vkfn;
     VkImageView views[AV_NUM_DATA_POINTERS];
 
-    /* Haar DWT pipeline */
-    ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_pl);
-
     /* Bind plane images */
     ff_vk_create_imageviews(vkctx, exec, views, frame);
     ff_vk_update_descriptor_img_array(vkctx, &s->dwt_pl, exec, frame, views, 0, 0,
                                       VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE);
+
+    /* Haar DWT pipeline */
+    ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_pl);
 
     /* Push data */
     ff_vk_update_push_exec(vkctx, exec, &s->dwt_pl, VK_SHADER_STAGE_COMPUTE_BIT,
@@ -270,34 +270,6 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
 
     /* Get a pooled device local host visible buffer for writing output data */
     if (field < 2) {
-        /*ret = ff_get_encode_buffer(s->avctx, avpkt,
-                                   max_frame_bytes << s->interlaced, 0);
-
-        VkExternalMemoryBufferCreateInfo create_desc = {
-            .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
-            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
-        };
-
-        VkImportMemoryHostPointerInfoEXT import_desc = {
-            .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
-            .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
-            .pHostPointer = avpkt->data,
-        };
-
-        VkMemoryHostPointerPropertiesEXT p_props = {
-            .sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT,
-        };
-
-        ret = vk->GetMemoryHostPointerPropertiesEXT(vkctx->hwctx->act_dev,
-                                                    import_desc.handleType,
-                                                    import_desc.pHostPointer,
-                                                    &p_props);
-        ret = ff_vk_create_avbuf(vkctx, &avpkt_buf, max_frame_bytes << s->interlaced,
-                                 &create_desc, &import_desc,
-                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        buf_vk = (FFVkBuffer *)avpkt_buf->data;*/
-
         ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &avpkt_buf,
                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
                                       max_frame_bytes << s->interlaced,
