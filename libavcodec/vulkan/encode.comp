@@ -16,7 +16,7 @@ layout(std430, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
     int ff_dirac_qscale_tab[116];
 };
 
-layout(push_constant, std430) uniform ComputeInfo {
+layout(push_constant, scalar) uniform ComputeInfo {
     DwtCoef p[4];
     BitBuf pb;
     QuantLuts luts;
@@ -28,9 +28,16 @@ layout(push_constant, std430) uniform ComputeInfo {
     int prefix_bytes;
 };
 
+#define BUF_BITS 32
+#define BUF_BYTES 4
+
 uint bit_buf = 0;
 uint bit_left = 32;
 int write_ptr = 0;
+
+int swap32(int data) {
+    pack32(unpack8(data).wzyx);
+}
 
 void put_bits(int n, int value) {
     if (n < bit_left) {
@@ -39,10 +46,50 @@ void put_bits(int n, int value) {
     } else {
         bit_buf <<= bit_left;
         bit_buf |= value >> (n - bit_left);
-        pb.data[write_ptr++] = bit_buf;
+        pb.data[write_ptr++] = swap32(bit_buf);
         bit_left += 32 - n;
         bit_buf = value;
     }
+}
+
+void flush_put_bits() {
+    int bit_left_lo = (bit_left >> 3) << 3;
+    bit_buf <<= (bit_left - bit_left_lo);
+    if (bit_left_lo == 0) {
+        pb.data[write_ptr++] = swap32(bif_buf);
+        bit_buf = 0;
+    }
+    bit_left = bit_left_lo;
+}
+
+int put_bytes_count() {
+    return write_ptr * BUF_BYTES + ((BUF_BITS - bit_left) >> 3);
+}
+
+/* Same as skip_put_bytes in put_bits.h but fills in 0xFF */
+void skip_put_bytes(int n) {
+    int bytes_left = bit_left >> 3;
+    if (n < bytes_left) {
+        int n_bits = n << 3;
+        int mask = (1 << n_bits) - 1;
+        bit_buf <<= n_bits;
+        bit_buf |= mask;
+        bit_left -= n_bits;
+        return;
+    }
+    int mask = (1 << bit_left) - 1;
+    bit_buf <<= bit_left;
+    bit_buf |= mask;
+    pb.data[write_ptr++] = swap32(bit_buf);
+    n -= bit_left >> 3;
+    int skip_dwords = n >> 2;
+    while (skip_dwords > 0) {
+        pb.data[write_ptr++] = 0xFFFFFFFFFF;
+        skip_dwords--;
+    }
+    int skip_bits = (n & 3) << 3;
+    bit_buf |= (1 << skip_bits) - 1;
+    bit_left = BUF_BITS - skip_bits;
 }
 
 void put_vc2_ue_uint(int val) {
@@ -70,45 +117,32 @@ void put_vc2_ue_uint(int val) {
     put_bits(bits * 2 + 1, (pbits << 1) | 1);
 }
 
-void flush_put_bits() {
-    pb.data[write_ptr++] = bit_buf;
-    bit_buf = 0;
-}
-
-int put_bytes_output() {
-    return write_ptr * 4;
-}
-
-void skip_put_bytes(int n) {
-    write_ptr += (n >> 2);
-    bit_left = (n % 4) * 8;
-}
-
 void encode_subband(ivec2 slice_coord, ivec2 band_size, int quant, int o, int plane) {
-    int left = band_size.x * (slice_coord.x+0) / num_slices.x;
+    int left = band_size.x * (slice_coord.x) / num_slices.x;
     int right = band_size.x * (slice_coord.x+1) / num_slices.x;
-    int top = band_size.y * (slice_coord.y+0) / num_slices.y;
+    int top = band_size.y * (slice_coord.y) / num_slices.y;
     int bottom = band_size.y * (slice_coord.y+1) / num_slices.y;
 
     int stride = slice_dim.x * num_slices.x;
     int band_ptr = int(o > 1) * band_size.y * stride + (o & 1) * band_size.x;
     int start = band_ptr + top * stride;
-    const int q_s = int(log2(luts.ff_dirac_qscale_tab[quant])) + 32;
+    int q_s = int(log2(luts.ff_dirac_qscale_tab[quant])) + 32;
 
     for (int y = top; y < bottom; y++) {
         for (int x = left; x < right; x++) {
             int coef = p[plane].coef_buf[band_ptr + x];
             int c_abs = int((abs(coef) / quant) >> q_s);
             put_vc2_ue_uint(c_abs);
-            if (c_abs != 0)
+            if (c_abs != 0) {
                 put_bits(1, int(coef < 0));
+            }
         }
         band_ptr += stride;
     }
 }
 
 int align(int x, int a) {
-    return (x+a-1) & ~(a-1);
+    return (x + a - 1) & ~(a - 1);
 }
 
 void encode_hq_slice(int slice_bytes_max) {
@@ -120,22 +154,22 @@ void encode_hq_slice(int slice_bytes_max) {
     put_bits(8, quant_idx);
 
     /* Luma + 2 Chroma planes */
-    #pragma unroll
     for (int p = 0; p < 3; p++) {
         int pad_s, pad_c;
+        int bytes_start = put_bytes_count();
+        /* Save current location and write a zero value */
         int write_start = write_ptr;
+        int bit_left_start = bit_left;
         put_bits(8, 0);
-        #pragma unroll
         for (int level = 0; level < wavelet_depth; level++) {
             ivec2 band_size = slice_dim >> level;
-            #pragma unroll
             for (int orientation = int(level > 0); orientation < 4; orientation++) {
                 encode_subband(slice_coord, band_size, luts.quant[level][orientation],
                                orientation, p);
             }
         }
         flush_put_bits();
-        int bytes_len = (write_ptr - write_start) * 4 - 1;
+        int bytes_len = put_bytes_output() - bytes_start - 1;
         if (p == 2) {
             int len_diff = slice_bytes_max - put_bytes_output();
             pad_s = align((bytes_len + len_diff), size_scaler)/size_scaler;
@@ -144,14 +178,8 @@ void encode_hq_slice(int slice_bytes_max) {
             pad_s = align(bytes_len, size_scaler)/size_scaler;
             pad_c = (pad_s*size_scaler) - bytes_len;
         }
-        /* Write the lower 8 bytes of write_start with pad_s */
-        pb.data[write_start] &= ~0xFF;
-        pb.data[write_start] |= pad_s & 0xFF;
+        pb.data[write_start] |= (pad_s & 0xFF) << (BUF_BITS - bit_left_start);
         /* vc2-reference uses that padding that decodes to '0' coeffs */
-        for (int i = 0; i < pad_c; i++) {
-            pb.data[write_ptr++] = uint8_t(0xFF);
-        }
-        // memset(put_bits_ptr(pb), 0xFF, pad_c);
         skip_put_bytes(pad_c);
     }
 }
@@ -161,5 +189,5 @@ void main() {
     int slice_bytes_max = (1280 * 720 * 3 / 2) / (num_slices.x * num_slices.y);
 
     /* Step 2. Quantize and encode */
-    //encode_hq_slice(slice_bytes_max);
+    encode_hq_slice(slice_bytes_max);
 }
