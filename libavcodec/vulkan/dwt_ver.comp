@@ -1,0 +1,34 @@
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
+    uint coef_buf[];
+};
+
+layout(push_constant, scalar) uniform ComputeInfo {
+    int wavelet_depth;
+    int s;
+    int stride;
+    int diff_offset;
+    ivec2 work_area;
+    DwtCoef src_buf[3];
+    DwtCoef dst_buf[3];
+};
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(coord, work_area))) {
+        return;
+    }
+
+    /* For vertical synth pass, each invocation handles a vertical pair of pixels */
+    uint plane_idx = gl_LocalInvocationID.z;
+    ivec2 coord_y = coord << ivec2(0, 1);
+    uint a = dst_buf[plane_idx].coef_buf[coord_y.y * stride + coord_y.x];
+    uint b = dst_buf[plane_idx].coef_buf[(coord_y.y + 1) * stride + coord_y.x];
+    uint dst_b = b - a;
+    uint dst_a = a + ((dst_b + 1) >> 1);
+    dst_buf[plane_idx].coef_buf[coord_y.y * stride + coord_y.x] = dst_a;
+    dst_buf[plane_idx].coef_buf[(coord_y.y + 1) * stride + coord_y.x] = dst_b;
+}

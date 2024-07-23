@@ -1,0 +1,30 @@
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 3) in;
+
+layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
+    uint coef_buf[];
+};
+
+layout(push_constant, scalar) uniform ComputeInfo {
+    int wavelet_depth;
+    int s;
+    int stride;
+    int diff_offset;
+    ivec2 work_area;
+    DwtCoef src_buf[3];
+    DwtCoef dst_buf[3];
+};
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(coord, work_area))) {
+        return;
+    }
+    uint plane_idx = gl_LocalInvocationID.z;
+    ivec2 synth_size = work_area >> 1;
+    ivec2 subband = coord & ivec2(1);
+    ivec2 new_coord = subband * synth_size + (coord >> 1);
+    uint texel = src_buf[plane_idx].coef_buf[coord.y * stride + coord.x];
+    dst_buf[plane_idx].coef_buf[new_coord.y * stride + new_coord.x] = texel;
+}

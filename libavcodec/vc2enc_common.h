@@ -125,7 +125,12 @@ typedef struct TransformArgs {
 typedef struct VC2DwtPushData {
     int wavelet_depth;
     int s;
-    VkDeviceAddress p[3];
+    int stride;
+    int diff_offset;
+    int work_area_x;
+    int work_area_y;
+    VkDeviceAddress src_buf[3];
+    VkDeviceAddress dst_buf[3];
 } VC2DwtPushData;
 
 typedef struct VC2EncAuxData {
@@ -179,6 +184,8 @@ typedef struct VC2EncContext {
 
     int num_x; /* #slices horizontally */
     int num_y; /* #slices vertically */
+    int group_x;
+    int group_y;
     int prefix_bytes;
     int size_scaler;
     int chroma_x_shift;
@@ -210,7 +217,8 @@ typedef struct VC2EncContext {
     FFVkQueueFamilyCtx qf;
     FFVkExecPool e;
 
-    FFVulkanPipeline dwt_pl;
+    FFVulkanPipeline dwt_upload_pl;
+    FFVulkanPipeline dwt_hor_pl, dwt_ver_pl, dwt_de_pl;
     FFVulkanPipeline enc_pl;
     FFVkSPIRVShader shd;
     FFVkSPIRVShader enc_shd;

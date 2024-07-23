@@ -35,24 +35,66 @@
 #include "vulkan.h"
 #include "hwconfig.h"
 
-extern const char *ff_source_dwt_comp;
 extern const char *ff_source_encode_comp;
+extern const char *ff_source_dwt_hor_comp;
+extern const char *ff_source_dwt_ver_comp;
+extern const char *ff_source_dwt_upload_comp;
+extern const char *ff_source_dwt_deinterleave_comp;
+
+static void init_vulkan_pipeline(VC2EncContext* s, FFVkSPIRVCompiler *spv,
+                                 FFVulkanPipeline* comp_pl, int push_size,
+                                 const char* pl_name, const char* pl_source,
+                                 int plane_desc) {
+    uint8_t *spv_data;
+    size_t spv_len;
+    void *spv_opaque = NULL;
+    FFVulkanContext *vkctx = &s->vkctx;
+    FFVkSPIRVShader* shd;
+    FFVulkanDescriptorSetBinding *desc;
+    int err;
+
+    ff_vk_shader_init(comp_pl, &s->shd, pl_name, VK_SHADER_STAGE_COMPUTE_BIT, 0);
+    shd = &s->shd;
+
+    /* Build DWT descriptor set. */
+    if (plane_desc) {
+        desc = (FFVulkanDescriptorSetBinding[])
+        {
+            {
+                .name = "textures",
+                .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .mem_layout = "r32f",
+                .dimensions = 2,
+                .elems = 3,
+                .stages = VK_SHADER_STAGE_COMPUTE_BIT,
+            },
+        };
+        RET(ff_vk_pipeline_descriptor_set_add(vkctx, comp_pl, shd, desc, 1, 0, 0));
+    }
+    ff_vk_add_push_constant(comp_pl, 0, push_size, VK_SHADER_STAGE_COMPUTE_BIT);
+    GLSLD(pl_source);
+
+    /* Compile Haar shader */
+    RET(spv->compile_shader(spv, vkctx, shd, &spv_data, &spv_len, "main", &spv_opaque));
+    RET(ff_vk_shader_create(vkctx, shd, spv_data, spv_len, "main"));
+
+    /* Initialize Haar compute pipeline */
+    RET(ff_vk_init_compute_pipeline(vkctx, comp_pl, shd));
+    RET(ff_vk_exec_pipeline_register(vkctx, &s->e, comp_pl));
+
+fail:
+}
 
 static void init_vulkan(AVCodecContext *avctx) {
     VC2EncContext *s = avctx->priv_data;
     FFVulkanContext *vkctx = &s->vkctx;
-    FFVkSPIRVShader *shd;
     FFVkSPIRVCompiler *spv;
-    FFVulkanDescriptorSetBinding *desc;
-    uint8_t *spv_data;
-    size_t spv_len;
-    void *spv_opaque = NULL;
     AVBufferRef* dwt_buf = NULL;
     AVBufferRef* coef_buf[3];
     FFVkBuffer* vk_buf = NULL;
     VC2EncAuxData* ad = NULL;
     Plane *p;
-    int i, level, err, ret;
+    int i, level, ret;
 
     vkctx->frames_ref = av_buffer_ref(avctx->hw_frames_ctx);
     vkctx->frames = (AVHWFramesContext *)vkctx->frames_ref->data;
@@ -72,23 +114,44 @@ static void init_vulkan(AVCodecContext *avctx) {
     }
 
     ff_vk_qf_init(vkctx, &s->qf, VK_QUEUE_COMPUTE_BIT);
+    ff_vk_exec_pool_init(vkctx, &s->qf, &s->e, s->qf.nb_queues * 4, 0, 0, 0, NULL);
 
     for (i = 0; i < 3; i++) {
+        /* Allocate coefficient buffer for each plane */
         p = &s->plane[i];
         ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &coef_buf[i],
                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
                                       p->coef_stride*p->dwt_height*sizeof(dwtcoef),
-                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         vk_buf = (FFVkBuffer*)coef_buf[i]->data;
-        s->dwt_consts.p[i] = vk_buf->address;
+        s->dwt_consts.src_buf[i] = vk_buf->address;
         s->enc_consts.p[i] = vk_buf->address;
+
+        /* Allocate temporary buffer for Haar operations for each plane */
+        ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &coef_buf[i],
+                                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
+                                      p->coef_stride*p->dwt_height*sizeof(dwtcoef),
+                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        vk_buf = (FFVkBuffer*)coef_buf[i]->data;
+        s->dwt_consts.dst_buf[i] = vk_buf->address;
     }
 
-    /* Slices */
+    /* Initialize Haar push data */
+    s->dwt_consts.wavelet_depth = s->wavelet_depth;
+    s->dwt_consts.s = 0;
+    s->dwt_consts.diff_offset = s->diff_offset;
+    s->dwt_consts.stride = s->plane[0].coef_stride;
+    s->dwt_consts.work_area_x = s->plane[0].dwt_width;
+    s->dwt_consts.work_area_y = s->plane[0].dwt_height;
+
+    /* Initialize encoder push data */
+    s->enc_consts.wavelet_depth = s->wavelet_depth;
+    s->enc_consts.slice_x = s->slice_width;
+    s->enc_consts.slice_y = s->slice_height;
     s->enc_consts.num_x = s->num_x;
     s->enc_consts.num_y = s->num_y;
 
-    /* Create uniform buffer for encoder auxilary data. */
+    /* Create buffer for encoder auxilary data. */
     ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &dwt_buf,
                                   VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, NULL,
                                   sizeof(VC2EncAuxData),
@@ -108,57 +171,20 @@ static void init_vulkan(AVCodecContext *avctx) {
     }
     memcpy(ad->ff_dirac_qscale_tab, ff_dirac_qscale_tab, sizeof(ff_dirac_qscale_tab));
 
-    /* Initialize encoder push data */
-    s->enc_consts.wavelet_depth = s->wavelet_depth;
-    s->enc_consts.slice_x = s->slice_width;
-    s->enc_consts.slice_y = s->slice_height;
-    s->dwt_consts.wavelet_depth = s->wavelet_depth;
+    /* Initialize encoding pipelines */
+    init_vulkan_pipeline(s, spv, &s->dwt_upload_pl, sizeof(VC2DwtPushData),
+                         "dwt_upload_pl", ff_source_dwt_upload_comp, 1);
+    init_vulkan_pipeline(s, spv, &s->dwt_hor_pl, sizeof(VC2DwtPushData),
+                         "dwt_hor_pl", ff_source_dwt_hor_comp, 0);
+    init_vulkan_pipeline(s, spv, &s->dwt_ver_pl, sizeof(VC2DwtPushData),
+                         "dwt_ver_pl", ff_source_dwt_ver_comp, 0);
+    init_vulkan_pipeline(s, spv, &s->dwt_de_pl, sizeof(VC2DwtPushData),
+                         "dwt_de_pl", ff_source_dwt_deinterleave_comp, 0);
+    init_vulkan_pipeline(s, spv, &s->enc_pl, sizeof(VC2EncPushData),
+                         "enc_pl", ff_source_encode_comp, 0);
 
-    ff_vk_exec_pool_init(vkctx, &s->qf, &s->e, s->qf.nb_queues * 4, 0, 0, 0, NULL);
-    ff_vk_shader_init(&s->dwt_pl, &s->shd, "haar_dwt", VK_SHADER_STAGE_COMPUTE_BIT, 0);
-    shd = &s->shd;
-
-    /* Build DWT descriptor set. */
-    desc = (FFVulkanDescriptorSetBinding[])
-    {
-        {
-            .name = "planes",
-            .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .mem_layout = "r32f",
-            .dimensions = 2,
-            .elems = 3,
-            .stages = VK_SHADER_STAGE_COMPUTE_BIT,
-        },
-    };
-    RET(ff_vk_pipeline_descriptor_set_add(vkctx, &s->dwt_pl, shd, desc, 1, 0, 0));
-    ff_vk_add_push_constant(&s->dwt_pl, 0, sizeof(VC2DwtPushData), VK_SHADER_STAGE_COMPUTE_BIT);
-
-    GLSLD(ff_source_dwt_comp);
-
-    /* Compile Haar shader */
-    RET(spv->compile_shader(spv, vkctx, shd, &spv_data, &spv_len, "main", &spv_opaque));
-    RET(ff_vk_shader_create(vkctx, shd, spv_data, spv_len, "main"));
-
-    /* Initialize Haar compute pipeline */
-    RET(ff_vk_init_compute_pipeline(vkctx, &s->dwt_pl, &s->shd));
-    RET(ff_vk_exec_pipeline_register(vkctx, &s->e, &s->dwt_pl));
-
-    ff_vk_shader_init(&s->enc_pl, &s->enc_shd, "encode", VK_SHADER_STAGE_COMPUTE_BIT, 0);
-    shd = &s->enc_shd;
-
-    /* Build encoder descriptor set. */
-    ff_vk_add_push_constant(&s->enc_pl, 0, sizeof(VC2EncPushData), VK_SHADER_STAGE_COMPUTE_BIT);
-
-    /* Compile encoding shader */
-    GLSLD(ff_source_encode_comp);
-    RET(spv->compile_shader(spv, vkctx, shd, &spv_data, &spv_len, "main", &spv_opaque));
-    RET(ff_vk_shader_create(vkctx, shd, spv_data, spv_len, "main"));
-
-    /* Initialize encoding compute pipeline */
-    RET(ff_vk_init_compute_pipeline(vkctx, &s->enc_pl, shd));
-    RET(ff_vk_exec_pipeline_register(vkctx, &s->e, &s->enc_pl));
-
-fail:
+    s->group_x = s->plane[0].dwt_width >> 3;
+    s->group_y = s->plane[0].dwt_height >> 3;
 }
 
 /*
@@ -198,24 +224,50 @@ fail:
  */
 static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, const AVFrame *frame)
 {
+    int i, group_x = s->group_x, group_y = s->group_y;
     FFVulkanContext *vkctx = &s->vkctx;
     FFVulkanFunctions *vk = &vkctx->vkfn;
     VkImageView views[AV_NUM_DATA_POINTERS];
 
-    /* Bind plane images */
+    /* Bind plane images and copy data to coefficient buffer. */
     ff_vk_create_imageviews(vkctx, exec, views, frame);
-    ff_vk_update_descriptor_img_array(vkctx, &s->dwt_pl, exec, frame, views, 0, 0,
+    ff_vk_update_descriptor_img_array(vkctx, &s->dwt_upload_pl, exec, frame, views, 0, 0,
                                       VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE);
 
-    /* Haar DWT pipeline */
-    ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_pl);
-
-    /* Push data */
-    ff_vk_update_push_exec(vkctx, exec, &s->dwt_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+    /* Upload coefficients from planes to the buffer. */
+    ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_upload_pl);
+    ff_vk_update_push_exec(vkctx, exec, &s->dwt_upload_pl, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(VC2DwtPushData), &s->dwt_consts);
+    vk->CmdDispatch(exec->buf, group_x, group_y, 3);
 
-    /* End of Haar DWT pass */
-    vk->CmdDispatch(exec->buf, s->num_x, s->num_y, 1);
+    /* Perform Haar wavelet trasform */
+    for (i = 0; i < s->wavelet_depth; i++) {
+        s->dwt_consts.work_area_x = group_x << 3;
+        s->dwt_consts.work_area_y = group_y << 3;
+
+        /* Horizontal Haar pass */
+        ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_hor_pl);
+        ff_vk_update_push_exec(vkctx, exec, &s->dwt_hor_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(VC2DwtPushData), &s->dwt_consts);
+        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
+
+
+        /* Vertical Haar pass */
+        ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_ver_pl);
+        ff_vk_update_push_exec(vkctx, exec, &s->dwt_ver_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(VC2DwtPushData), &s->dwt_consts);
+        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
+
+        /* Deinterleave Haar pass */
+        ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_de_pl);
+        ff_vk_update_push_exec(vkctx, exec, &s->dwt_de_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(VC2DwtPushData), &s->dwt_consts);
+        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
+
+        /* Reduce work area to next level. */
+        group_x = (group_x + 1) >> 1;
+        group_y = (group_y + 1) >> 1;
+    }
 }
 
 static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
