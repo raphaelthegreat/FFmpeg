@@ -382,7 +382,8 @@ static void encode_subband(VC2EncContext *s, PutBitContext *pb, int sx, int sy,
 
     for (y = top; y < bottom; y++) {
         for (x = left; x < right; x++) {
-            uint32_t c_abs = QUANT(FFABS(coeff[x]), q_m, q_a, q_s);
+            //uint32_t c_abs = QUANT(FFABS(coeff[x]), q_m, q_a, q_s);
+            uint32_t c_abs = (FFABS(coeff[x]));
             put_vc2_ue_uint(pb, c_abs);
             if (c_abs)
                 put_bits(pb, 1, coeff[x] < 0);
@@ -622,6 +623,7 @@ int encode_slices(VC2EncContext *s)
     SliceArgs *enc_args = s->slice_args;
 
     flush_put_bits(&s->pb);
+    uint32_t num_bytes = put_bytes_output(&s->pb);
     buf = put_bits_ptr(&s->pb);
 
     for (slice_y = 0; slice_y < s->num_y; slice_y++) {

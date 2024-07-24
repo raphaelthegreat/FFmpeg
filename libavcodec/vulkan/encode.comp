@@ -1,4 +1,5 @@
 #extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_scalar_block_layout : require
 
 // TODO: Process pixels in parallel
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
@@ -8,7 +9,7 @@ layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
     int coef_buf[];
 };
-layout(std430, buffer_reference, buffer_reference_align = 1) buffer BitBuf {
+layout(std430, buffer_reference, buffer_reference_align = 4) buffer BitBuf {
     uint data[];
 };
 layout(std430, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
@@ -31,13 +32,9 @@ layout(push_constant, scalar) uniform ComputeInfo {
 #define BUF_BITS 32
 #define BUF_BYTES 4
 
-uint bit_buf = 0;
-uint bit_left = 32;
+int bit_buf = 0;
+int bit_left = 32;
 int write_ptr = 0;
-
-int swap32(int data) {
-    pack32(unpack8(data).wzyx);
-}
 
 void put_bits(int n, int value) {
     if (n < bit_left) {
@@ -45,9 +42,9 @@ void put_bits(int n, int value) {
         bit_left -= n;
     } else {
         bit_buf <<= bit_left;
-        bit_buf |= value >> (n - bit_left);
-        pb.data[write_ptr++] = swap32(bit_buf);
-        bit_left += 32 - n;
+        bit_buf |= (value >> (n - bit_left));
+        pb.data[write_ptr++] = pack32(unpack8(bit_buf).wzyx);
+        bit_left += BUF_BITS - n;
         bit_buf = value;
     }
 }
@@ -56,7 +53,7 @@ void flush_put_bits() {
     int bit_left_lo = (bit_left >> 3) << 3;
     bit_buf <<= (bit_left - bit_left_lo);
     if (bit_left_lo == 0) {
-        pb.data[write_ptr++] = swap32(bif_buf);
+        pb.data[write_ptr++] = pack32(unpack8(bit_buf).wzyx);
         bit_buf = 0;
     }
     bit_left = bit_left_lo;
@@ -80,11 +77,11 @@ void skip_put_bytes(int n) {
     int mask = (1 << bit_left) - 1;
     bit_buf <<= bit_left;
     bit_buf |= mask;
-    pb.data[write_ptr++] = swap32(bit_buf);
+    pb.data[write_ptr++] = pack32(unpack8(bit_buf).wzyx);
     n -= bit_left >> 3;
     int skip_dwords = n >> 2;
     while (skip_dwords > 0) {
-        pb.data[write_ptr++] = 0xFFFFFFFFFF;
+        pb.data[write_ptr++] = 0xFFFFFFFF;
         skip_dwords--;
     }
     int skip_bits = (n & 3) << 3;
@@ -92,25 +89,26 @@ void skip_put_bytes(int n) {
     bit_left = BUF_BITS - skip_bits;
 }
 
-void put_vc2_ue_uint(int val) {
-    int pbits = 0, topbit = 1, maxval = 1;
-    if (val++ == 0) {
+void put_vc2_ue_uint(uint val) {
+    int pbits = 0, topbit = 1, maxval = 1, bits = 0;
+    if (val == 0) {
         put_bits(1, 1);
         return;
     }
+    val++;
 
     while (val > maxval) {
         topbit <<= 1;
+        bits++;
         maxval <<= 1;
         maxval |=  1;
     }
 
-    int bits = int(log2(topbit));
     for (int i = 0; i < bits; i++) {
         topbit >>= 1;
         pbits <<= 2;
         if ((val & topbit) != 0) {
-            pbits |= 0x1;
+            pbits |= 1;
         }
     }
 
@@ -123,15 +121,14 @@ void encode_subband(ivec2 slice_coord, ivec2 band_size, int quant, int o, int pl
     int top = band_size.y * (slice_coord.y) / num_slices.y;
     int bottom = band_size.y * (slice_coord.y+1) / num_slices.y;
 
-    int stride = slice_dim.x * num_slices.x;
+    int stride = /*slice_dim.x * num_slices.x*/1280;
     int band_ptr = int(o > 1) * band_size.y * stride + (o & 1) * band_size.x;
     int start = band_ptr + top * stride;
-    int q_s = int(log2(luts.ff_dirac_qscale_tab[quant])) + 32;
 
     for (int y = top; y < bottom; y++) {
         for (int x = left; x < right; x++) {
             int coef = p[plane].coef_buf[band_ptr + x];
-            int c_abs = int((abs(coef) / quant) >> q_s);
+            uint c_abs = uint(abs(coef));
             put_vc2_ue_uint(c_abs);
             if (c_abs != 0) {
                 put_bits(1, int(coef < 0));
@@ -147,8 +144,8 @@ int align(int x, int a) {
 
 void encode_hq_slice(int slice_bytes_max) {
     ivec2 slice_coord = ivec2(gl_GlobalInvocationID.xy);
-    int slice_index = slice_coord.y * slice_dim.x + slice_coord.x;
-    write_ptr = slice_bytes_max * slice_index;
+    int slice_index = slice_coord.y * int(gl_NumWorkGroups.x) + slice_coord.x;
+    write_ptr = (slice_bytes_max >> 2) * slice_index;
 
     /* Write quant index for this slice */
     put_bits(8, quant_idx);
@@ -162,16 +159,16 @@ void encode_hq_slice(int slice_bytes_max) {
         int bit_left_start = bit_left;
         put_bits(8, 0);
         for (int level = 0; level < wavelet_depth; level++) {
-            ivec2 band_size = slice_dim >> level;
+            ivec2 band_size = (slice_dim * num_slices) >> (wavelet_depth - level);
             for (int orientation = int(level > 0); orientation < 4; orientation++) {
                 encode_subband(slice_coord, band_size, luts.quant[level][orientation],
                                orientation, p);
             }
         }
         flush_put_bits();
-        int bytes_len = put_bytes_output() - bytes_start - 1;
+        int bytes_len = put_bytes_count() - bytes_start - 1;
         if (p == 2) {
-            int len_diff = slice_bytes_max - put_bytes_output();
+            int len_diff = slice_bytes_max - put_bytes_count();
             pad_s = align((bytes_len + len_diff), size_scaler)/size_scaler;
             pad_c = (pad_s*size_scaler) - bytes_len;
         } else {
@@ -186,7 +183,7 @@ void encode_hq_slice(int slice_bytes_max) {
 
 void main() {
     /* Step 1. TODO: Figure out appropriate quant index for optimal slice size */
-    int slice_bytes_max = (1280 * 720 * 3 / 2) / (num_slices.x * num_slices.y);
+    int slice_bytes_max = 1389;
 
     /* Step 2. Quantize and encode */
     encode_hq_slice(slice_bytes_max);
