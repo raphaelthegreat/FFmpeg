@@ -1,13 +1,12 @@
 // Generated from libavcodec/vulkan/dwt_upload.comp
 const char *ff_source_dwt_upload_comp =
 "#extension GL_EXT_scalar_block_layout : require\n"
+"#extension GL_EXT_debug_printf : require\n"
 "\n"
-"layout(local_size_x = 8, local_size_y = 8, local_size_z = 3) in;\n"
-"\n"
-"layout (set = 0, binding = 0, r32ui) uniform uimage2D planes[3];\n"
+"layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;\n"
 "\n"
 "layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {\n"
-"    uint coef_buf[];\n"
+"    int coef_buf[];\n"
 "};\n"
 "\n"
 "layout(push_constant, scalar) uniform ComputeInfo {\n"
@@ -27,7 +26,7 @@ const char *ff_source_dwt_upload_comp =
 "    }\n"
 "    uint plane_idx = gl_LocalInvocationID.z;\n"
 "    uint coef_idx = coord.y * stride + coord.x;\n"
-"    uint texel = imageLoad(planes[plane_idx], coord).x;\n"
+"    int texel = imageLoad(planes[plane_idx], coord).x;\n"
 "    src_buf[plane_idx].coef_buf[coef_idx] = texel - diff_offset;\n"
 "}\n"
 ;

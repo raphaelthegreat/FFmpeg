@@ -1,5 +1,6 @@
 #extension GL_EXT_shader_explicit_arithmetic_types : require
 #extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_debug_printf : require
 
 // TODO: Process pixels in parallel
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
@@ -116,18 +117,19 @@ void put_vc2_ue_uint(uint val) {
 }
 
 void encode_subband(ivec2 slice_coord, ivec2 band_size, int quant, int o, int plane) {
+    int slice_index = slice_coord.y * int(gl_NumWorkGroups.x) + slice_coord.x;
     int left = band_size.x * (slice_coord.x) / num_slices.x;
     int right = band_size.x * (slice_coord.x+1) / num_slices.x;
     int top = band_size.y * (slice_coord.y) / num_slices.y;
     int bottom = band_size.y * (slice_coord.y+1) / num_slices.y;
 
-    int stride = /*slice_dim.x * num_slices.x*/1280;
+    int stride = slice_dim.x * num_slices.x;
     int band_ptr = int(o > 1) * band_size.y * stride + (o & 1) * band_size.x;
     int start = band_ptr + top * stride;
 
     for (int y = top; y < bottom; y++) {
         for (int x = left; x < right; x++) {
-            int coef = p[plane].coef_buf[band_ptr + x];
+            int coef = p[plane].coef_buf[start + x];
             uint c_abs = uint(abs(coef));
             put_vc2_ue_uint(c_abs);
             if (c_abs != 0) {
@@ -151,14 +153,14 @@ void encode_hq_slice(int slice_bytes_max) {
     put_bits(8, quant_idx);
 
     /* Luma + 2 Chroma planes */
-    for (int p = 0; p < 3; p++) {
+    for (int p = 0; p < 1; p++) {
         int pad_s, pad_c;
         int bytes_start = put_bytes_count();
         /* Save current location and write a zero value */
         int write_start = write_ptr;
         int bit_left_start = bit_left;
         put_bits(8, 0);
-        for (int level = 0; level < wavelet_depth; level++) {
+        for (int level = 0; level < 4; level++) {
             ivec2 band_size = (slice_dim * num_slices) >> (wavelet_depth - level);
             for (int orientation = int(level > 0); orientation < 4; orientation++) {
                 encode_subband(slice_coord, band_size, luts.quant[level][orientation],
@@ -174,6 +176,9 @@ void encode_hq_slice(int slice_bytes_max) {
         } else {
             pad_s = align(bytes_len, size_scaler)/size_scaler;
             pad_c = (pad_s*size_scaler) - bytes_len;
+        }
+        if (bytes_len != 64) {
+            debugPrintfEXT("Start %d Current %d PadC %d bytes_len %d ", write_start, write_ptr, pad_c, bytes_len);
         }
         pb.data[write_start] |= (pad_s & 0xFF) << (BUF_BITS - bit_left_start);
         /* vc2-reference uses that padding that decodes to '0' coeffs */

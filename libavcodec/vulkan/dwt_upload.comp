@@ -1,11 +1,10 @@
 #extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_debug_printf : require
 
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 3) in;
-
-layout (set = 0, binding = 0, r32ui) uniform uimage2D planes[3];
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
-    uint coef_buf[];
+    int coef_buf[];
 };
 
 layout(push_constant, scalar) uniform ComputeInfo {
@@ -25,6 +24,6 @@ void main() {
     }
     uint plane_idx = gl_LocalInvocationID.z;
     uint coef_idx = coord.y * stride + coord.x;
-    uint texel = imageLoad(planes[plane_idx], coord).x;
+    int texel = imageLoad(planes[plane_idx], coord).x;
     src_buf[plane_idx].coef_buf[coef_idx] = texel - diff_offset;
 }

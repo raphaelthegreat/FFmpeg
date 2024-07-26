@@ -372,8 +372,8 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
                 b->width  = w;
                 b->height = h;
                 b->stride = p->coef_stride;
-                shift = (o > 1)*b->height*b->stride + (o & 1)*b->width;
-                b->buf = p->coef_buf + shift;
+                b->shift = (o > 1)*b->height*b->stride + (o & 1)*b->width;
+                b->buf = p->coef_buf + b->shift;
             }
         }
 

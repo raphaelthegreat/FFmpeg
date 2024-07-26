@@ -64,9 +64,9 @@ static void init_vulkan_pipeline(VC2EncContext* s, FFVkSPIRVCompiler *spv,
         desc = (FFVulkanDescriptorSetBinding[])
         {
             {
-                .name = "textures",
+                .name = "planes",
                 .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .mem_layout = "r32f",
+                .mem_layout = "r32i",
                 .dimensions = 2,
                 .elems = 3,
                 .stages = VK_SHADER_STAGE_COMPUTE_BIT,
@@ -279,7 +279,7 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, const AVFrame *fr
     ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_upload_pl);
     ff_vk_update_push_exec(vkctx, exec, &s->dwt_upload_pl, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(VC2DwtPushData), &s->dwt_consts);
-    vk->CmdDispatch(exec->buf, group_x, group_y, 1);
+    vk->CmdDispatch(exec->buf, group_x, group_y, 3);
 
     /* Perform Haar wavelet trasform */
     for (i = 0; i < s->wavelet_depth; i++) {
@@ -290,7 +290,7 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, const AVFrame *fr
         ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_hor_pl);
         ff_vk_update_push_exec(vkctx, exec, &s->dwt_hor_pl, VK_SHADER_STAGE_COMPUTE_BIT,
                                0, sizeof(VC2DwtPushData), &s->dwt_consts);
-        vk->CmdDispatch(exec->buf, group_x, group_y, 1);
+        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
         vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
                                                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                                                .pBufferMemoryBarriers = buf_bar,
@@ -300,7 +300,7 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, const AVFrame *fr
         ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_ver_pl);
         ff_vk_update_push_exec(vkctx, exec, &s->dwt_ver_pl, VK_SHADER_STAGE_COMPUTE_BIT,
                                0, sizeof(VC2DwtPushData), &s->dwt_consts);
-        vk->CmdDispatch(exec->buf, group_x, group_y, 1);
+        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
         vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
                                                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                                                .pBufferMemoryBarriers = buf_bar,
@@ -311,7 +311,7 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, const AVFrame *fr
         ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_de_pl);
         ff_vk_update_push_exec(vkctx, exec, &s->dwt_de_pl, VK_SHADER_STAGE_COMPUTE_BIT,
                                0, sizeof(VC2DwtPushData), &s->dwt_consts);
-        vk->CmdDispatch(exec->buf, group_x, group_y, 1);
+        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
         vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
                                                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                                                .pBufferMemoryBarriers = buf_bar,

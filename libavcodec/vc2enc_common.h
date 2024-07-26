@@ -89,6 +89,7 @@ typedef struct SubBand {
     ptrdiff_t stride;
     int width;
     int height;
+    int shift;
 } SubBand;
 
 typedef struct Plane {
