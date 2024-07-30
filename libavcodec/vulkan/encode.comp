@@ -7,13 +7,13 @@ layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 #define MAX_DWT_LEVELS (5)
 
-layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
+layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
     int coef_buf[];
 };
-layout(std430, buffer_reference, buffer_reference_align = 4) buffer BitBuf {
+layout(scalar, buffer_reference, buffer_reference_align = 4) buffer BitBuf {
     uint data[];
 };
-layout(std430, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
+layout(scalar, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
     int quant[5][4];
     int ff_dirac_qscale_tab[116];
 };
@@ -35,6 +35,7 @@ layout(push_constant, scalar) uniform ComputeInfo {
 
 int bit_buf = 0;
 int bit_left = 32;
+int write_start = 0;
 int write_ptr = 0;
 
 void put_bits(int n, int value) {
@@ -44,7 +45,8 @@ void put_bits(int n, int value) {
     } else {
         bit_buf <<= bit_left;
         bit_buf |= (value >> (n - bit_left));
-        pb.data[write_ptr++] = pack32(unpack8(bit_buf).wzyx);
+        uint data = pack32(unpack8(bit_buf).wzyx);
+        pb.data[write_ptr++] = data;
         bit_left += BUF_BITS - n;
         bit_buf = value;
     }
@@ -54,14 +56,15 @@ void flush_put_bits() {
     int bit_left_lo = (bit_left >> 3) << 3;
     bit_buf <<= (bit_left - bit_left_lo);
     if (bit_left_lo == 0) {
-        pb.data[write_ptr++] = pack32(unpack8(bit_buf).wzyx);
+        uint data = pack32(unpack8(bit_buf).wzyx);
+        pb.data[write_ptr++] = data;
         bit_buf = 0;
     }
     bit_left = bit_left_lo;
 }
 
 int put_bytes_count() {
-    return write_ptr * BUF_BYTES + ((BUF_BITS - bit_left) >> 3);
+    return (write_ptr - write_start) * BUF_BYTES + ((BUF_BITS - bit_left) >> 3);
 }
 
 /* Same as skip_put_bytes in put_bits.h but fills in 0xFF */
@@ -136,7 +139,7 @@ void encode_subband(ivec2 slice_coord, ivec2 band_size, int quant, int o, int pl
                 put_bits(1, int(coef < 0));
             }
         }
-        band_ptr += stride;
+        start += stride;
     }
 }
 
@@ -148,12 +151,13 @@ void encode_hq_slice(int slice_bytes_max) {
     ivec2 slice_coord = ivec2(gl_GlobalInvocationID.xy);
     int slice_index = slice_coord.y * int(gl_NumWorkGroups.x) + slice_coord.x;
     write_ptr = (slice_bytes_max >> 2) * slice_index;
+    write_start = write_ptr;
 
     /* Write quant index for this slice */
     put_bits(8, quant_idx);
 
     /* Luma + 2 Chroma planes */
-    for (int p = 0; p < 1; p++) {
+    for (int p = 0; p < 3; p++) {
         int pad_s, pad_c;
         int bytes_start = put_bytes_count();
         /* Save current location and write a zero value */
@@ -177,8 +181,8 @@ void encode_hq_slice(int slice_bytes_max) {
             pad_s = align(bytes_len, size_scaler)/size_scaler;
             pad_c = (pad_s*size_scaler) - bytes_len;
         }
-        if (bytes_len != 64) {
-            debugPrintfEXT("Start %d Current %d PadC %d bytes_len %d ", write_start, write_ptr, pad_c, bytes_len);
+        if (pad_c != 0) {
+            //debugPrintfEXT("PadC %d\\n", pad_c);
         }
         pb.data[write_start] |= (pad_s & 0xFF) << (BUF_BITS - bit_left_start);
         /* vc2-reference uses that padding that decodes to '0' coeffs */
@@ -192,4 +196,8 @@ void main() {
 
     /* Step 2. Quantize and encode */
     encode_hq_slice(slice_bytes_max);
+
+    if (write_ptr > 1389 * (40 * 45)) {
+        debugPrintfEXT("BAAAD\\n");
+    }
 }

@@ -1,8 +1,9 @@
 #extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_debug_printf : require
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
+layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
     uint coef_buf[];
 };
 
@@ -18,13 +19,13 @@ layout(push_constant, scalar) uniform ComputeInfo {
 
 void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
-    if (any(greaterThanEqual(coord, work_area))) {
-        return;
-    }
 
     /* For horizontal synth pass, each invocation handles a horizontal pair of pixels */
-    uint plane_idx = gl_LocalInvocationID.z;
+    uint plane_idx = gl_GlobalInvocationID.z;
     ivec2 coord_x = coord << ivec2(1, 0);
+    if (any(greaterThanEqual(coord_x, work_area))) {
+        return;
+    }
     uint a = src_buf[plane_idx].coef_buf[coord_x.y * stride + coord_x.x];
     uint b = src_buf[plane_idx].coef_buf[coord_x.y * stride + coord_x.x + 1];
     uint dst_b = (b - a) * (1 << s);

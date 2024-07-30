@@ -1,10 +1,11 @@
 // Generated from libavcodec/vulkan/dwt_deinterleave.comp
 const char *ff_source_dwt_deinterleave_comp =
 "#extension GL_EXT_scalar_block_layout : require\n"
+"#extension GL_EXT_debug_printf : require\n"
 "\n"
 "layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;\n"
 "\n"
-"layout(std430, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {\n"
+"layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {\n"
 "    uint coef_buf[];\n"
 "};\n"
 "\n"

@@ -86,6 +86,8 @@ void encode_parse_info(VC2EncContext *s, enum DiracParseCodes pcode)
     s->next_parse_offset = cur_pos;
     put_bits32(&s->pb, pcode == DIRAC_PCODE_END_SEQ ? 13 : 0);
 
+    cur_pos = put_bytes_count(&s->pb, 0);
+
     /* Last parse offset */
     put_bits32(&s->pb, s->last_parse_code == DIRAC_PCODE_END_SEQ ? 13 : dist);
 
@@ -175,6 +177,7 @@ static void encode_clean_area(VC2EncContext *s)
 static void encode_signal_range(VC2EncContext *s)
 {
     put_bits(&s->pb, 1, !s->strict_compliance);
+    uint32_t num = put_bits_count(&s->pb);
     if (!s->strict_compliance)
         put_vc2_ue_uint(&s->pb, s->bpp_idx);
 }
@@ -623,7 +626,6 @@ int encode_slices(VC2EncContext *s)
     SliceArgs *enc_args = s->slice_args;
 
     flush_put_bits(&s->pb);
-    uint32_t num_bytes = put_bytes_output(&s->pb);
     buf = put_bits_ptr(&s->pb);
 
     for (slice_y = 0; slice_y < s->num_y; slice_y++) {
@@ -634,8 +636,8 @@ int encode_slices(VC2EncContext *s)
         }
     }
 
-    s->avctx->execute(s->avctx, encode_hq_slice, enc_args, NULL, s->num_x*s->num_y,
-                      sizeof(SliceArgs));
+    //s->avctx->execute(s->avctx, encode_hq_slice, enc_args, NULL, s->num_x*s->num_y,
+    //                  sizeof(SliceArgs));
 
     skip_put_bytes(&s->pb, skip);
 
