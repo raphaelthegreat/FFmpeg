@@ -28,7 +28,7 @@ const char *ff_source_dwt_upload_comp =
 "    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);\n"
 "    uint plane_idx = gl_GlobalInvocationID.z;\n"
 "    uint coef_idx = coord.y * stride + coord.x;\n"
-"    uint8_t texel = src_buf[plane_idx].data[coef_idx];\n"
+"    const uint8_t texel = src_buf[plane_idx].data[coef_idx];\n"
 "    dst_buf[plane_idx].coef_buf[coef_idx] = int(texel - diff_offset);\n"
 "}\n"
 ;

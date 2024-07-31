@@ -385,8 +385,8 @@ static void encode_subband(VC2EncContext *s, PutBitContext *pb, int sx, int sy,
 
     for (y = top; y < bottom; y++) {
         for (x = left; x < right; x++) {
-            //uint32_t c_abs = QUANT(FFABS(coeff[x]), q_m, q_a, q_s);
-            uint32_t c_abs = (FFABS(coeff[x]));
+            uint32_t c_abs = QUANT(FFABS(coeff[x]), q_m, q_a, q_s);
+            //uint32_t c_abs = (FFABS(coeff[x]));
             put_vc2_ue_uint(pb, c_abs);
             if (c_abs)
                 put_bits(pb, 1, coeff[x] < 0);
@@ -564,7 +564,7 @@ int calc_slice_sizes(VC2EncContext *s)
 }
 
 /* VC-2 13.5.3 - hq_slice */
-static int encode_hq_slice(AVCodecContext *avctx, void *arg)
+int encode_hq_slice(AVCodecContext *avctx, void *arg)
 {
     SliceArgs *slice_dat = arg;
     VC2EncContext *s = slice_dat->ctx;
@@ -636,8 +636,8 @@ int encode_slices(VC2EncContext *s)
         }
     }
 
-    //s->avctx->execute(s->avctx, encode_hq_slice, enc_args, NULL, s->num_x*s->num_y,
-    //                  sizeof(SliceArgs));
+    s->avctx->execute(s->avctx, encode_hq_slice, enc_args, NULL, s->num_x*s->num_y,
+                      sizeof(SliceArgs));
 
     skip_put_bytes(&s->pb, skip);
 

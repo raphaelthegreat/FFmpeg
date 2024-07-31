@@ -113,6 +113,12 @@ static int dwt_plane(AVCodecContext *avctx, void *arg)
 
     memset(buf, 0, p->coef_stride * (p->dwt_height - p->height) * sizeof(dwtcoef));
 
+    if (p == &s->plane[0]) {
+        FILE* file = fopen("plane.bin", "w");
+        fwrite(p->coef_buf, p->coef_stride * p->dwt_height, 4, file);
+        fclose(file);
+    }
+
     for (level = s->wavelet_depth-1; level >= 0; level--) {
         const SubBand *b = &p->band[level][0];
         t->vc2_subband_dwt[idx](t, p->coef_buf, p->coef_stride,

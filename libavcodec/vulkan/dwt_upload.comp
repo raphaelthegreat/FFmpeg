@@ -26,6 +26,6 @@ void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
     uint plane_idx = gl_GlobalInvocationID.z;
     uint coef_idx = coord.y * stride + coord.x;
-    uint8_t texel = src_buf[plane_idx].data[coef_idx];
+    const uint8_t texel = src_buf[plane_idx].data[coef_idx];
     dst_buf[plane_idx].coef_buf[coef_idx] = int(texel - diff_offset);
 }

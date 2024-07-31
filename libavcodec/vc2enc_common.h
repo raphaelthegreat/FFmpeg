@@ -241,4 +241,6 @@ int calc_slice_sizes(VC2EncContext *s);
 
 int encode_slices(VC2EncContext *s);
 
+int encode_hq_slice(AVCodecContext *avctx, void *arg);
+
 #endif
