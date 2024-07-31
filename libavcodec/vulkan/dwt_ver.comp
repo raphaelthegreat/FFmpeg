@@ -4,7 +4,7 @@
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
-    uint coef_buf[];
+    int coef_buf[];
 };
 
 layout(push_constant, scalar) uniform ComputeInfo {
@@ -27,10 +27,10 @@ void main() {
         return;
     }
 
-    uint a = dst_buf[plane_idx].coef_buf[coord_y.y * stride + coord_y.x];
-    uint b = dst_buf[plane_idx].coef_buf[(coord_y.y + 1) * stride + coord_y.x];
-    uint dst_b = b - a;
-    uint dst_a = a + ((dst_b + 1) >> 1);
+    int a = dst_buf[plane_idx].coef_buf[coord_y.y * stride + coord_y.x];
+    int b = dst_buf[plane_idx].coef_buf[(coord_y.y + 1) * stride + coord_y.x];
+    int dst_b = b - a;
+    int dst_a = a + ((dst_b + 1) >> 1);
     dst_buf[plane_idx].coef_buf[coord_y.y * stride + coord_y.x] = dst_a;
     dst_buf[plane_idx].coef_buf[(coord_y.y + 1) * stride + coord_y.x] = dst_b;
 }
