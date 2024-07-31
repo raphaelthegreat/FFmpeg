@@ -159,6 +159,9 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
     s->avctx->execute(s->avctx, dwt_plane, s->transform_args, NULL, 3,
                       sizeof(TransformArgs));
 
+    dwtcoef* coef_buf = s->plane[0].coef_buf;
+    dwtcoef coef = *coef_buf;
+
     /* Calculate per-slice quantizers and sizes */
     max_frame_bytes = header_size + calc_slice_sizes(s);
 

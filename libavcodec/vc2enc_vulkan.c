@@ -371,9 +371,9 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
     ff_vk_exec_submit(vkctx, exec);
     ff_vk_exec_wait(vkctx, exec);
 
-    /*FILE* file = fopen("plane_vk.bin", "w");
+    FILE* file = fopen("plane_vk.bin", "w");
     fwrite(dst_plane_dat + s->buf_plane_size, 4, s->plane[1].coef_stride * s->plane[1].dwt_height, file);
-    fclose(file);*/
+    fclose(file);
 }
 
 static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
@@ -398,30 +398,17 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
     ff_vk_exec_submit(vkctx, exec);
     ff_vk_exec_wait(vkctx, exec);*/
 
-    dwtcoef* coef_buf = (dwtcoef*)dst_plane_dat;
-    for (int i = 0; i < 3; i++) {
-        Plane* p = &s->plane[i];
-        for (int level = s->wavelet_depth-1; level >= 0; level--) {
-            for (int o = 0; o < 4; o++) {
-                SubBand* b = &p->band[level][o];
-                b->buf = coef_buf + b->shift;
-            }
-        }
-        coef_buf += s->buf_plane_size;
-    }
-
+    flush_put_bits(&s->pb);
     buf = put_bits_ptr(&s->pb);
     int skip = 0;
     for (int slice_y = 0; slice_y < s->num_y; slice_y++) {
         for (int slice_x = 0; slice_x < s->num_x; slice_x++) {
             SliceArgs *args = &s->slice_args[s->num_x*slice_y + slice_x];
             init_put_bits(&args->pb, buf + skip, args->bytes+s->prefix_bytes);
+            encode_hq_slice(s->avctx, args);
             skip += args->bytes;
         }
     }
-
-    s->avctx->execute(s->avctx, encode_hq_slice, s->slice_args, NULL, s->num_x*s->num_y,
-                      sizeof(SliceArgs));
 
     skip_put_bytes(&s->pb, skip);
 
@@ -448,6 +435,18 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
 
     /* Perform Haar DWT pass on the inpute frame. */
     dwt_plane(s, exec, frame);
+
+    dwtcoef* coef_buf = (dwtcoef*)dst_plane_dat;
+    for (int i = 0; i < 3; i++) {
+        Plane* p = &s->plane[i];
+        for (int level = s->wavelet_depth-1; level >= 0; level--) {
+            for (int o = 0; o < 4; o++) {
+                SubBand* b = &p->band[level][o];
+                b->buf = coef_buf + b->shift;
+            }
+        }
+        coef_buf += s->buf_plane_size >> 2;
+    }
 
     /* Calculate per-slice quantizers and sizes */
     /* TODO: Properly implement this */
