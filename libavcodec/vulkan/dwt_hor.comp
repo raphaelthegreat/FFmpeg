@@ -7,12 +7,18 @@ layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
     int coef_buf[];
 };
 
+struct Plane {
+    ivec2 dim;
+    int coef_stride;
+    int pad;
+};
+
 layout(push_constant, scalar) uniform ComputeInfo {
-    int wavelet_depth;
     int s;
-    int stride;
     int diff_offset;
-    ivec2 work_area;
+    int level;
+    int pad;
+    Plane planes[3];
     DwtCoef dst_buf[3];
     DwtCoef src_buf[3];
 };
@@ -23,9 +29,11 @@ void main() {
     /* For horizontal synth pass, each invocation handles a horizontal pair of pixels */
     uint plane_idx = gl_GlobalInvocationID.z;
     ivec2 coord_x = coord << ivec2(1, 0);
+    ivec2 work_area = planes[plane_idx].dim >> level;
     if (any(greaterThanEqual(coord_x, work_area))) {
         return;
     }
+    int stride = planes[plane_idx].coef_stride;
     int a = src_buf[plane_idx].coef_buf[coord_x.y * stride + coord_x.x];
     int b = src_buf[plane_idx].coef_buf[coord_x.y * stride + coord_x.x + 1];
     int dst_b = (b - a) * (1 << s);

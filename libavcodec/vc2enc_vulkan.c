@@ -150,18 +150,18 @@ static void init_vulkan(AVCodecContext *avctx) {
 
     for (i = 0; i < 3; i++) {
         p = &s->plane[i];
-        s->dwt_consts.src_buf[i] = src_vk_buf->address + s->buf_plane_size * i;
         s->enc_consts.p[i] = src_vk_buf->address + s->buf_plane_size * i;
+        s->dwt_consts.src_buf[i] = src_vk_buf->address + s->buf_plane_size * i;
         s->dwt_consts.dst_buf[i] = dst_vk_buf->address + s->buf_plane_size * i;
+        s->dwt_consts.planes[i].width = p->dwt_width;
+        s->dwt_consts.planes[i].height = p->dwt_height;
+        s->dwt_consts.planes[i].coef_stride = p->coef_stride;
     }
 
     /* Initialize Haar push data */
-    s->dwt_consts.wavelet_depth = s->wavelet_depth;
-    s->dwt_consts.s = 0;
     s->dwt_consts.diff_offset = s->diff_offset;
-    s->dwt_consts.stride = s->plane[0].coef_stride;
-    s->dwt_consts.work_area_x = s->plane[0].dwt_width;
-    s->dwt_consts.work_area_y = s->plane[0].dwt_height;
+    s->dwt_consts.s = 0;
+    s->dwt_consts.level = 0;
 
     /* Initialize encoder push data */
     s->enc_consts.wavelet_depth = s->wavelet_depth;
@@ -290,16 +290,16 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
             .layerCount = 1,
         },
         .imageExtent = {
-            .width = s->plane[0].dwt_width,
-            .height = s->plane[0].dwt_height,
             .depth = 1,
         },
     };
 
-    for (i = 0; i < 1; i++) {
+    for (i = 0; i < 3; i++) {
+        copy.imageExtent.width = s->plane[i].dwt_width;
+        copy.imageExtent.height = s->plane[i].dwt_height;
         vk->CmdCopyImageToBuffer(exec->buf, vkf->img[0], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                  s->src_buf, 1, &copy);
-        copy.bufferOffset += s->plane[0].coef_stride * s->plane[0].dwt_height;
+        copy.bufferOffset += s->buf_plane_size;
         copy.imageSubresource.aspectMask <<= 1;
     }
 
@@ -325,18 +325,17 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
     ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_upload_pl);
     ff_vk_update_push_exec(vkctx, exec, &s->dwt_upload_pl, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(VC2DwtPushData), &s->dwt_consts);
-    vk->CmdDispatch(exec->buf, group_x, group_y, 1);
+    vk->CmdDispatch(exec->buf, group_x, group_y, 3);
 
     /* Perform Haar wavelet trasform */
     for (i = 0; i < s->wavelet_depth; i++) {
-        s->dwt_consts.work_area_x = group_x << 3;
-        s->dwt_consts.work_area_y = group_y << 3;
+        s->dwt_consts.level = i;
 
         /* Horizontal Haar pass */
         ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_hor_pl);
         ff_vk_update_push_exec(vkctx, exec, &s->dwt_hor_pl, VK_SHADER_STAGE_COMPUTE_BIT,
                                0, sizeof(VC2DwtPushData), &s->dwt_consts);
-        vk->CmdDispatch(exec->buf, group_x, group_y, 1);
+        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
         vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
                                                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                                                .pBufferMemoryBarriers = buf_bar,
@@ -346,7 +345,7 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
         ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_ver_pl);
         ff_vk_update_push_exec(vkctx, exec, &s->dwt_ver_pl, VK_SHADER_STAGE_COMPUTE_BIT,
                                0, sizeof(VC2DwtPushData), &s->dwt_consts);
-        vk->CmdDispatch(exec->buf, group_x, group_y, 1);
+        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
         vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
                                                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                                                .pBufferMemoryBarriers = buf_bar,
@@ -371,6 +370,10 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
 
     ff_vk_exec_submit(vkctx, exec);
     ff_vk_exec_wait(vkctx, exec);
+
+    /*FILE* file = fopen("plane_vk.bin", "w");
+    fwrite(dst_plane_dat + s->buf_plane_size, 4, s->plane[1].coef_stride * s->plane[1].dwt_height, file);
+    fclose(file);*/
 }
 
 static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
@@ -404,7 +407,7 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
                 b->buf = coef_buf + b->shift;
             }
         }
-        coef_buf += p->coef_stride * p->dwt_height;
+        coef_buf += s->buf_plane_size;
     }
 
     buf = put_bits_ptr(&s->pb);
@@ -719,6 +722,23 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
     s->slice_args = av_calloc(s->num_x*s->num_y, sizeof(SliceArgs));
     if (!s->slice_args)
         return AVERROR(ENOMEM);
+
+    for (i = 0; i < 116; i++) {
+        const uint64_t qf = ff_dirac_qscale_tab[i];
+        const uint32_t m = av_log2(qf);
+        const uint32_t t = (1ULL << (m + 32)) / qf;
+        const uint32_t r = (t*qf + qf) & UINT32_MAX;
+        if (!(qf & (qf - 1))) {
+            s->qmagic_lut[i][0] = 0xFFFFFFFF;
+            s->qmagic_lut[i][1] = 0xFFFFFFFF;
+        } else if (r <= 1 << m) {
+            s->qmagic_lut[i][0] = t + 1;
+            s->qmagic_lut[i][1] = 0;
+        } else {
+            s->qmagic_lut[i][0] = t;
+            s->qmagic_lut[i][1] = t;
+        }
+    }
 
     init_vulkan(avctx);
 

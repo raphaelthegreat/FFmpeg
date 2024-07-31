@@ -123,13 +123,19 @@ typedef struct TransformArgs {
     VC2TransformContext t;
 } TransformArgs;
 
+typedef struct VC2DwtPlane {
+    int width;
+    int height;
+    int coef_stride;
+    int pad;
+} VC2DwtPlane;
+
 typedef struct VC2DwtPushData {
-    int wavelet_depth;
     int s;
-    int stride;
     int diff_offset;
-    int work_area_x;
-    int work_area_y;
+    int level;
+    int pad;
+    VC2DwtPlane planes[3];
     VkDeviceAddress src_buf[3];
     VkDeviceAddress dst_buf[3];
 } VC2DwtPushData;

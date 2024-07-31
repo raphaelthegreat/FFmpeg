@@ -7,22 +7,30 @@ layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
     uint coef_buf[];
 };
 
+struct Plane {
+    ivec2 dim;
+    int coef_stride;
+    int pad;
+};
+
 layout(push_constant, scalar) uniform ComputeInfo {
-    int wavelet_depth;
     int s;
-    int stride;
     int diff_offset;
-    ivec2 work_area;
+    int level;
+    int pad;
+    Plane planes[3];
     DwtCoef src_buf[3];
     DwtCoef dst_buf[3];
 };
 
 void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    uint plane_idx = gl_GlobalInvocationID.z;
+    ivec2 work_area = planes[plane_idx].dim >> level;
     if (any(greaterThanEqual(coord, work_area))) {
         return;
     }
-    uint plane_idx = gl_LocalInvocationID.z;
+    int stride = planes[plane_idx].coef_stride;
     ivec2 synth_size = work_area >> 1;
     ivec2 subband = coord & ivec2(1);
     ivec2 new_coord = subband * synth_size + (coord >> 1);

@@ -12,12 +12,18 @@ layout(scalar, buffer_reference, buffer_reference_align = 1) buffer PlaneBuf {
     uint8_t data[];
 };
 
+struct Plane {
+    ivec2 dim;
+    int coef_stride;
+    int pad;
+};
+
 layout(push_constant, scalar) uniform ComputeInfo {
-    int wavelet_depth;
     int s;
-    int stride;
     int diff_offset;
-    ivec2 work_area;
+    int level;
+    int pad;
+    Plane planes[3];
     PlaneBuf src_buf[3];
     DwtCoef dst_buf[3];
 };
@@ -25,7 +31,12 @@ layout(push_constant, scalar) uniform ComputeInfo {
 void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
     uint plane_idx = gl_GlobalInvocationID.z;
+    ivec2 work_area = planes[plane_idx].dim;
+    if (any(greaterThanEqual(coord, work_area))) {
+        return;
+    }
+    int stride = planes[plane_idx].coef_stride;
     uint coef_idx = coord.y * stride + coord.x;
-    const uint8_t texel = src_buf[plane_idx].data[coef_idx];
+    uint8_t texel = src_buf[plane_idx].data[coef_idx];
     dst_buf[plane_idx].coef_buf[coef_idx] = int(texel - diff_offset);
 }
