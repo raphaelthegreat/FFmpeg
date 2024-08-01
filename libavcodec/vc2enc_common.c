@@ -385,8 +385,8 @@ static void encode_subband(VC2EncContext *s, PutBitContext *pb, int sx, int sy,
 
     for (y = top; y < bottom; y++) {
         for (x = left; x < right; x++) {
-            uint32_t c_abs = QUANT(FFABS(coeff[x]), q_m, q_a, q_s);
-            //uint32_t c_abs = (FFABS(coeff[x]));
+            //uint32_t c_abs = QUANT(FFABS(coeff[x]), q_m, q_a, q_s);
+            uint32_t c_abs = (FFABS(coeff[x]));
             put_vc2_ue_uint(pb, c_abs);
             if (c_abs)
                 put_bits(pb, 1, coeff[x] < 0);
@@ -435,7 +435,8 @@ static int count_hq_slice(SliceArgs *slice, int quant_idx)
 
                 for (y = top; y < bottom; y++) {
                     for (x = left; x < right; x++) {
-                        uint32_t c_abs = QUANT(FFABS(buf[x]), q_m, q_a, q_s);
+                        //uint32_t c_abs = QUANT(FFABS(buf[x]), q_m, q_a, q_s);
+                        uint32_t c_abs = (FFABS(buf[x]));
                         bits += count_vc2_ue_uint(c_abs);
                         bits += !!c_abs;
                     }
@@ -527,7 +528,6 @@ int calc_slice_sizes(VC2EncContext *s)
 
     bytes_left = s->frame_max_bytes - bytes_left;
 
-    /* Second pass - distribute leftover bytes */
     while (bytes_left > 0) {
         int distributed = 0;
         for (i = 0; i < slice_redist_range; i++) {

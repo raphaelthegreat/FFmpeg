@@ -40,6 +40,7 @@
 extern const char *ff_source_encode_comp;
 extern const char *ff_source_dwt_hor_comp;
 extern const char *ff_source_dwt_ver_comp;
+extern const char *ff_source_slice_sizes_comp;
 extern const char *ff_source_dwt_upload_comp;
 extern const char *ff_source_dwt_deinterleave_comp;
 static RENDERDOC_API_1_6_0 *rdoc_api = NULL;
@@ -91,6 +92,7 @@ fail:
 
 uint8_t* src_plane_dat = NULL;
 uint8_t* dst_plane_dat = NULL;
+VC2EncSliceArgs* vk_slice_args = NULL;
 
 static void init_vulkan(AVCodecContext *avctx) {
     VC2EncContext *s = avctx->priv_data;
@@ -151,6 +153,7 @@ static void init_vulkan(AVCodecContext *avctx) {
     for (i = 0; i < 3; i++) {
         p = &s->plane[i];
         s->enc_consts.p[i] = src_vk_buf->address + s->buf_plane_size * i;
+        s->calc_consts.p[i] = dst_vk_buf->address + s->buf_plane_size * i;
         s->dwt_consts.src_buf[i] = src_vk_buf->address + s->buf_plane_size * i;
         s->dwt_consts.dst_buf[i] = dst_vk_buf->address + s->buf_plane_size * i;
         s->dwt_consts.planes[i].width = p->dwt_width;
@@ -162,6 +165,15 @@ static void init_vulkan(AVCodecContext *avctx) {
     s->dwt_consts.diff_offset = s->diff_offset;
     s->dwt_consts.s = 0;
     s->dwt_consts.level = 0;
+
+    /* Initializer slice calc push data */
+    s->calc_consts.num_x = s->num_x;
+    s->calc_consts.num_y = s->num_y;
+    s->calc_consts.slice_dim_x = s->slice_width;
+    s->calc_consts.slice_dim_y = s->slice_height;
+    s->calc_consts.wavelet_depth = s->wavelet_depth;
+    s->calc_consts.quant_idx = 0;
+    s->calc_consts.prefix_bytes = s->prefix_bytes;
 
     /* Initialize encoder push data */
     s->enc_consts.wavelet_depth = s->wavelet_depth;
@@ -177,6 +189,7 @@ static void init_vulkan(AVCodecContext *avctx) {
                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
     src_vk_buf = (FFVkBuffer*)dwt_buf->data;
+    s->calc_consts.luts = src_vk_buf->address;
     s->enc_consts.luts = src_vk_buf->address;
     ad = (VC2EncAuxData*)src_vk_buf->mapped_mem;
     if (s->wavelet_depth <= 4 && s->quant_matrix == VC2_QM_DEF) {
@@ -190,6 +203,18 @@ static void init_vulkan(AVCodecContext *avctx) {
     }
     memcpy(ad->ff_dirac_qscale_tab, ff_dirac_qscale_tab, sizeof(ff_dirac_qscale_tab));
 
+    /* Create buffer for slice arguments */
+    ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &dwt_buf,
+                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, NULL,
+                                  sizeof(VC2EncSliceArgs) * s->num_x * s->num_y,
+                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    src_vk_buf = (FFVkBuffer*)dwt_buf->data;
+    vk_slice_args = (VC2EncSliceArgs*)src_vk_buf->mapped_mem;
+    s->calc_consts.slice = src_vk_buf->address;
+
     /* Initialize encoding pipelines */
     init_vulkan_pipeline(s, spv, &s->dwt_upload_pl, sizeof(VC2DwtPushData),
                          "dwt_upload_pl", ff_source_dwt_upload_comp, 0);
@@ -199,6 +224,8 @@ static void init_vulkan(AVCodecContext *avctx) {
                          "dwt_ver_pl", ff_source_dwt_ver_comp, 0);
     init_vulkan_pipeline(s, spv, &s->dwt_de_pl, sizeof(VC2DwtPushData),
                          "dwt_de_pl", ff_source_dwt_deinterleave_comp, 0);
+    init_vulkan_pipeline(s, spv, &s->slice_pl, sizeof(VC2EncPushData),
+                         "slice_pl", ff_source_slice_sizes_comp, 0);
     init_vulkan_pipeline(s, spv, &s->enc_pl, sizeof(VC2EncPushData),
                          "enc_pl", ff_source_encode_comp, 0);
 
@@ -241,8 +268,6 @@ static void init_vulkan(AVCodecContext *avctx) {
  * of levels. The rest of the areas can be thought as the details needed
  * to restore the image perfectly to its original size.
  */
-uint8_t* img_data = NULL;
-
 static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
 {
     int i, group_x = s->group_x, group_y = s->group_y, ret;
@@ -368,8 +393,19 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
         group_y = (group_y + 1) >> 1;
     }
 
+    /* Calculate slice sizes. */
+    ff_vk_exec_bind_pipeline(vkctx, exec, &s->slice_pl);
+    ff_vk_update_push_exec(vkctx, exec, &s->slice_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, sizeof(VC2EncSliceCalcPushData), &s->calc_consts);
+    vk->CmdDispatch(exec->buf, s->num_x, s->num_y, 1);
+
     ff_vk_exec_submit(vkctx, exec);
     ff_vk_exec_wait(vkctx, exec);
+
+    for (int i = 0; i < s->num_x * s->num_y; i++) {
+        int bytes = vk_slice_args[i].bytes;
+        printf("bytes %d\n", bytes);
+    }
 
     FILE* file = fopen("plane_vk.bin", "w");
     fwrite(dst_plane_dat + s->buf_plane_size, 4, s->plane[1].coef_stride * s->plane[1].dwt_height, file);
@@ -538,6 +574,11 @@ static av_cold int vc2_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
     s->slice_min_bytes = s->slice_max_bytes - s->slice_max_bytes*(s->tolerance/100.0f);
     if (s->slice_min_bytes < 0)
         return AVERROR(EINVAL);
+
+    /* Update slice calc push data */
+    s->calc_consts.size_scaler = s->size_scaler;
+    s->calc_consts.bits_ceil  = s->slice_max_bytes << 3;
+    s->calc_consts.bits_floor = s->slice_min_bytes << 3;
 
     ret = encode_frame(s, avpkt, frame, aux_data, header_size, s->interlaced);
     if (ret)

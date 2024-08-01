@@ -159,6 +159,29 @@ typedef struct VC2EncPushData {
     int prefix_bytes;
 } VC2EncPushData;
 
+typedef struct VC2EncSliceArgs {
+    int quant_idx;
+    int bits_ceil;
+    int bits_floor;
+    int bytes;
+} VC2EncSliceArgs;
+
+typedef struct VC2EncSliceCalcPushData {
+    VkDeviceAddress p[4];
+    VkDeviceAddress luts;
+    VkDeviceAddress slice;
+    int num_x;
+    int num_y;
+    int slice_dim_x;
+    int slice_dim_y;
+    int wavelet_depth;
+    int quant_idx;
+    int size_scaler;
+    int prefix_bytes;
+    int bits_ceil;
+    int bits_floor;
+} VC2EncSliceCalcPushData;
+
 typedef struct VC2EncContext {
     AVClass *av_class;
     PutBitContext pb;
@@ -226,6 +249,7 @@ typedef struct VC2EncContext {
 
     FFVulkanPipeline dwt_upload_pl;
     FFVulkanPipeline dwt_hor_pl, dwt_ver_pl, dwt_de_pl;
+    FFVulkanPipeline slice_pl;
     FFVulkanPipeline enc_pl;
     FFVkSPIRVShader shd;
     FFVkSPIRVShader enc_shd;
@@ -235,6 +259,7 @@ typedef struct VC2EncContext {
     uint32_t buf_plane_size;
     VC2EncPushData enc_consts;
     VC2DwtPushData dwt_consts;
+    VC2EncSliceCalcPushData calc_consts;
 } VC2EncContext;
 
 void encode_parse_info(VC2EncContext *s, enum DiracParseCodes pcode);
