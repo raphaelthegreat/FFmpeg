@@ -3,15 +3,13 @@
 #extension GL_EXT_debug_printf : require
 
 // TODO make parallel
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 20, local_size_y = 45, local_size_z = 1) in;
 
 #define DIRAC_MAX_QUANT_INDEX 116
 #define MAX_DWT_LEVELS 5
 
 struct SliceArgs {
     int quant_idx;
-    int bits_ceil;
-    int bits_floor;
     int bytes;
 };
 
@@ -19,7 +17,7 @@ layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
     int coef_buf[];
 };
 
-layout(scalar, buffer_reference, buffer_reference_align = 16) buffer SliceArgBuf {
+layout(std430, buffer_reference, buffer_reference_align = 8) buffer SliceArgBuf {
     SliceArgs args[];
 };
 
@@ -149,8 +147,8 @@ void main() {
         quant_buf[0] = quant;
         bits_last = bits;
     }
-    uint slice_index = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
-    debugPrintfEXT("slice_index %d", slice_index);
+    uint slice_index = gl_GlobalInvocationID.y * num_slices.x + gl_GlobalInvocationID.x;
     slice.args[slice_index].quant_idx = clamp(quant, 0, q_ceil-1);
     slice.args[slice_index].bytes = ssize_round(bits >> 3);
+    barrier();
 }

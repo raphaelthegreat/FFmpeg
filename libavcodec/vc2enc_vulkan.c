@@ -205,9 +205,7 @@ static void init_vulkan(AVCodecContext *avctx) {
 
     /* Create buffer for slice arguments */
     ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &dwt_buf,
-                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, NULL,
+                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
                                   sizeof(VC2EncSliceArgs) * s->num_x * s->num_y,
                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
@@ -397,19 +395,32 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
     ff_vk_exec_bind_pipeline(vkctx, exec, &s->slice_pl);
     ff_vk_update_push_exec(vkctx, exec, &s->slice_pl, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(VC2EncSliceCalcPushData), &s->calc_consts);
-    vk->CmdDispatch(exec->buf, s->num_x, s->num_y, 1);
+    vk->CmdDispatch(exec->buf, 2, 1, 1);
 
     ff_vk_exec_submit(vkctx, exec);
     ff_vk_exec_wait(vkctx, exec);
 
-    for (int i = 0; i < s->num_x * s->num_y; i++) {
+    VC2EncSliceArgs* sl_args = vk_slice_args;
+    for (int slice_y = 0; slice_y < s->num_y; slice_y++) {
+        for (int slice_x = 0; slice_x < s->num_x; slice_x++) {
+            SliceArgs *args = &s->slice_args[s->num_x*slice_y + slice_x];
+            args->ctx = s;
+            args->x   = slice_x;
+            args->y   = slice_y;
+            args->bytes = sl_args->bytes;
+            args->quant_idx = sl_args->quant_idx;
+            sl_args++;
+        }
+    }
+
+    /*for (int i = 0; i < s->num_x * s->num_y; i++) {
         int bytes = vk_slice_args[i].bytes;
         printf("bytes %d\n", bytes);
     }
 
     FILE* file = fopen("plane_vk.bin", "w");
     fwrite(dst_plane_dat + s->buf_plane_size, 4, s->plane[1].coef_stride * s->plane[1].dwt_height, file);
-    fclose(file);
+    fclose(file);*/
 }
 
 static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
@@ -457,7 +468,7 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
                         const char *aux_data, const int header_size, int field)
 {
     int i, ret;
-    int64_t max_frame_bytes;
+    int64_t max_frame_bytes, encode_buffer_size;
     AVBufferRef *avpkt_buf = NULL;
     FFVkBuffer* buf_vk = NULL;
     FFVulkanContext *vkctx = &s->vkctx;
@@ -486,7 +497,7 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
 
     /* Calculate per-slice quantizers and sizes */
     /* TODO: Properly implement this */
-    max_frame_bytes = header_size + /*2048 * (40 * 45)*/ calc_slice_sizes(s);
+    max_frame_bytes = header_size + s->avctx->width * s->avctx->height * 3 * sizeof(dwtcoef);
     s->custom_quant_matrix = 0;
 
     AVBufferRef* buf_backup;
