@@ -149,6 +149,7 @@ typedef struct VC2EncPushData {
     VkDeviceAddress p[4];
     VkDeviceAddress pb;
     VkDeviceAddress luts;
+    VkDeviceAddress slice;
     int num_x;
     int num_y;
     int slice_x;
@@ -157,6 +158,7 @@ typedef struct VC2EncPushData {
     int quant_idx;
     int size_scaler;
     int prefix_bytes;
+    int num_frame;
 } VC2EncPushData;
 
 typedef struct VC2EncSliceArgs {
@@ -236,6 +238,7 @@ typedef struct VC2EncContext {
     int slice_height;
     int slice_width;
     int interlaced;
+    int num_frame;
     enum VC2_QM quant_matrix;
 
     /* Parse code state */
@@ -256,6 +259,7 @@ typedef struct VC2EncContext {
     AVBufferPool* dwt_buf_pool;
 
     VkBuffer src_buf, dst_buf;
+    VkBuffer slice_buf;
     uint32_t buf_plane_size;
     VC2EncPushData enc_consts;
     VC2DwtPushData dwt_consts;

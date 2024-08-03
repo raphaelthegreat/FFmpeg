@@ -152,7 +152,7 @@ static void init_vulkan(AVCodecContext *avctx) {
 
     for (i = 0; i < 3; i++) {
         p = &s->plane[i];
-        s->enc_consts.p[i] = src_vk_buf->address + s->buf_plane_size * i;
+        s->enc_consts.p[i] = dst_vk_buf->address + s->buf_plane_size * i;
         s->calc_consts.p[i] = dst_vk_buf->address + s->buf_plane_size * i;
         s->dwt_consts.src_buf[i] = src_vk_buf->address + s->buf_plane_size * i;
         s->dwt_consts.dst_buf[i] = dst_vk_buf->address + s->buf_plane_size * i;
@@ -210,8 +210,10 @@ static void init_vulkan(AVCodecContext *avctx) {
                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
     src_vk_buf = (FFVkBuffer*)dwt_buf->data;
+    s->slice_buf = src_vk_buf->buf;
     vk_slice_args = (VC2EncSliceArgs*)src_vk_buf->mapped_mem;
     s->calc_consts.slice = src_vk_buf->address;
+    s->enc_consts.slice = src_vk_buf->address;
 
     /* Initialize encoding pipelines */
     init_vulkan_pipeline(s, spv, &s->dwt_upload_pl, sizeof(VC2DwtPushData),
@@ -398,8 +400,56 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
                            0, sizeof(VC2EncSliceCalcPushData), &s->calc_consts);
     vk->CmdDispatch(exec->buf, num_slice_groups, 1, 1);
 
+    const VkBufferMemoryBarrier2 slice_buf_bar = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = s->slice_buf,
+        .size = sizeof(VC2EncSliceArgs) * s->num_x * s->num_y,
+        .offset = 0,
+    };
+    vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
+                                           .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                           .pBufferMemoryBarriers = &slice_buf_bar,
+                                           .bufferMemoryBarrierCount = 1U,
+                                       });
+}
+
+static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
+{
+    uint32_t num_slice_groups = (s->num_x*s->num_y + 1023) >> 10;
+    FFVulkanContext *vkctx = &s->vkctx;
+    FFVulkanFunctions *vk = &vkctx->vkfn;
+
+    flush_put_bits(&s->pb);
+    uint8_t* vk_buf = put_bits_ptr(&s->pb);
+    s->enc_consts.pb += put_bytes_count(&s->pb, 0);
+    s->enc_consts.num_frame = s->num_frame++;
+
+    ff_vk_exec_bind_pipeline(vkctx, exec, &s->enc_pl);
+    ff_vk_update_push_exec(vkctx, exec, &s->enc_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, sizeof(VC2EncPushData), &s->enc_consts);
+
+    vk->CmdDispatch(exec->buf, num_slice_groups, 1, 1);
+
     ff_vk_exec_submit(vkctx, exec);
     ff_vk_exec_wait(vkctx, exec);
+
+    dwtcoef* coef_buf = (dwtcoef*)dst_plane_dat;
+    for (int i = 0; i < 3; i++) {
+        Plane* p = &s->plane[i];
+        for (int level = s->wavelet_depth-1; level >= 0; level--) {
+            for (int o = 0; o < 4; o++) {
+                SubBand* b = &p->band[level][o];
+                b->buf = coef_buf + b->shift;
+            }
+        }
+        coef_buf += s->buf_plane_size >> 2;
+    }
 
     VC2EncSliceArgs* sl_args = vk_slice_args;
     for (int slice_y = 0; slice_y < s->num_y; slice_y++) {
@@ -414,50 +464,22 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
         }
     }
 
-    /*for (int i = 0; i < s->num_x * s->num_y; i++) {
-        int bytes = vk_slice_args[i].bytes;
-        printf("bytes %d\n", bytes);
-    }
-
-    FILE* file = fopen("plane_vk.bin", "w");
-    fwrite(dst_plane_dat + s->buf_plane_size, 4, s->plane[1].coef_stride * s->plane[1].dwt_height, file);
-    fclose(file);*/
-}
-
-static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
-{
-    uint8_t *buf;
-    /*FFVulkanContext *vkctx = &s->vkctx;
-    FFVulkanFunctions *vk = &vkctx->vkfn;
-
     flush_put_bits(&s->pb);
-    s->enc_consts.pb += put_bytes_count(&s->pb, 0);
-
-    ff_vk_exec_bind_pipeline(vkctx, exec, &s->enc_pl);
-
-    s->enc_consts.quant_idx = 0; // TODO: Part of slice size estimation.
-    s->enc_consts.prefix_bytes = 0;
-    s->enc_consts.size_scaler = s->size_scaler;
-    ff_vk_update_push_exec(vkctx, exec, &s->enc_pl, VK_SHADER_STAGE_COMPUTE_BIT,
-                           0, sizeof(VC2EncPushData), &s->enc_consts);
-
-    vk->CmdDispatch(exec->buf, s->num_x, s->num_y, 1);
-
-    ff_vk_exec_submit(vkctx, exec);
-    ff_vk_exec_wait(vkctx, exec);*/
-
-    flush_put_bits(&s->pb);
-    buf = put_bits_ptr(&s->pb);
+    uint8_t* buf = put_bits_ptr(&s->pb);
     int skip = 0;
     for (int slice_y = 0; slice_y < s->num_y; slice_y++) {
         for (int slice_x = 0; slice_x < s->num_x; slice_x++) {
             SliceArgs *args = &s->slice_args[s->num_x*slice_y + slice_x];
+            if (slice_x == 1 && slice_y == 20) {
+                printf("pb_start %d\n", skip);
+            }
             init_put_bits(&args->pb, buf + skip, args->bytes+s->prefix_bytes);
             encode_hq_slice(s->avctx, args);
             skip += args->bytes;
         }
     }
 
+    fflush(stdout);
     skip_put_bytes(&s->pb, skip);
 
     /* Skip forward to write end header */
@@ -483,21 +505,6 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
 
     /* Perform Haar DWT pass on the inpute frame. */
     dwt_plane(s, exec, frame);
-
-    dwtcoef* coef_buf = (dwtcoef*)dst_plane_dat;
-    for (int i = 0; i < 3; i++) {
-        Plane* p = &s->plane[i];
-        for (int level = s->wavelet_depth-1; level >= 0; level--) {
-            for (int o = 0; o < 4; o++) {
-                SubBand* b = &p->band[level][o];
-                b->buf = coef_buf + b->shift;
-            }
-        }
-        coef_buf += s->buf_plane_size >> 2;
-    }
-
-    /* Calculate per-slice quantizers and sizes */
-    /* TODO: Properly implement this */
     max_frame_bytes = header_size + s->avctx->width * s->avctx->height * 3 * sizeof(dwtcoef);
     s->custom_quant_matrix = 0;
 
@@ -591,6 +598,8 @@ static av_cold int vc2_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
     s->calc_consts.size_scaler = s->size_scaler;
     s->calc_consts.bits_ceil  = s->slice_max_bytes << 3;
     s->calc_consts.bits_floor = s->slice_min_bytes << 3;
+    s->enc_consts.prefix_bytes = 0;
+    s->enc_consts.size_scaler = s->size_scaler;
 
     ret = encode_frame(s, avpkt, frame, aux_data, header_size, s->interlaced);
     if (ret)
