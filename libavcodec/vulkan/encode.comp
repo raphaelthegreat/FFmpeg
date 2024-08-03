@@ -7,6 +7,15 @@ layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 #define MAX_DWT_LEVELS (5)
 
+struct SliceArgs {
+    int quant_idx;
+    int bytes;
+    int pb_start;
+    int pad;
+};
+layout(std430, buffer_reference, buffer_reference_align = 8) buffer SliceArgBuf {
+    SliceArgs args[];
+};
 layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
     int coef_buf[];
 };
@@ -22,6 +31,7 @@ layout(push_constant, scalar) uniform ComputeInfo {
     DwtCoef p[4];
     BitBuf pb;
     QuantLuts luts;
+    SliceArgBuf slice;
     ivec2 num_slices;
     ivec2 slice_dim;
     int wavelet_depth;
@@ -147,9 +157,13 @@ int align(int x, int a) {
     return (x + a - 1) & ~(a - 1);
 }
 
-void encode_hq_slice(int slice_bytes_max) {
+void main() {
+    /* Step 1. TODO: Figure out appropriate quant index for optimal slice size */
+    int slice_bytes_max = 1389;
+
+    /* Step 2. Quantize and encode */
     ivec2 slice_coord = ivec2(gl_GlobalInvocationID.xy);
-    int slice_index = slice_coord.y * int(gl_NumWorkGroups.x) + slice_coord.x;
+    int slice_index = int(gl_GlobalInvocationID.y * num_slices.x + gl_GlobalInvocationID.x);
     write_ptr = (slice_bytes_max >> 2) * slice_index;
     write_start = write_ptr;
 
@@ -181,23 +195,8 @@ void encode_hq_slice(int slice_bytes_max) {
             pad_s = align(bytes_len, size_scaler)/size_scaler;
             pad_c = (pad_s*size_scaler) - bytes_len;
         }
-        if (pad_c != 0) {
-            //debugPrintfEXT("PadC %d\\n", pad_c);
-        }
         pb.data[write_start] |= (pad_s & 0xFF) << (BUF_BITS - bit_left_start);
         /* vc2-reference uses that padding that decodes to '0' coeffs */
         skip_put_bytes(pad_c);
-    }
-}
-
-void main() {
-    /* Step 1. TODO: Figure out appropriate quant index for optimal slice size */
-    int slice_bytes_max = 1389;
-
-    /* Step 2. Quantize and encode */
-    encode_hq_slice(slice_bytes_max);
-
-    if (write_ptr > 1389 * (40 * 45)) {
-        debugPrintfEXT("BAAAD\\n");
     }
 }

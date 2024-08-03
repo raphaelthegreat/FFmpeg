@@ -162,6 +162,8 @@ typedef struct VC2EncPushData {
 typedef struct VC2EncSliceArgs {
     int quant_idx;
     int bytes;
+    int pb_start;
+    int pad;
 } VC2EncSliceArgs;
 
 typedef struct VC2EncSliceCalcPushData {

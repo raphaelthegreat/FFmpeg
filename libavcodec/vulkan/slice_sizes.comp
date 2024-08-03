@@ -3,7 +3,9 @@
 #extension GL_EXT_debug_printf : require
 
 // TODO make parallel
-layout(local_size_x = 20, local_size_y = 45, local_size_z = 1) in;
+#define WORKGROUP_X 1024
+
+layout(local_size_x = WORKGROUP_X, local_size_y = 1, local_size_z = 1) in;
 
 #define DIRAC_MAX_QUANT_INDEX 116
 #define MAX_DWT_LEVELS 5
@@ -11,6 +13,8 @@ layout(local_size_x = 20, local_size_y = 45, local_size_z = 1) in;
 struct SliceArgs {
     int quant_idx;
     int bytes;
+    int pb_start;
+    int pad;
 };
 
 layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
@@ -71,7 +75,8 @@ int count_hq_slice(int quant_index) {
     bits += 8*prefix_bytes;
     bits += 8; /* quant_idx */
 
-    ivec2 slice_coord = ivec2(gl_GlobalInvocationID.xy);
+    int slice_index = int(gl_GlobalInvocationID.x);
+    ivec2 slice_coord = ivec2(slice_index % num_slices.x, slice_index / num_slices.x);
     for (int p = 0; p < 3; p++) {
         int bytes_start = bits >> 3;
         bits += 8;
@@ -121,6 +126,11 @@ int ssize_round(int b) {
 }
 
 void main() {
+    int slice_index = int(gl_GlobalInvocationID.x);
+    int max_index = num_slices.x * num_slices.y;
+    if (slice_index >= max_index) {
+        return;
+    }
     for (int i = 0; i < DIRAC_MAX_QUANT_INDEX; i++) {
         cache[i] = 0;
     }
@@ -132,7 +142,6 @@ void main() {
     int step = 1;
     int bits_last = 0;
     int bits = count_hq_slice(quant);
-    ivec2 slice_coord = ivec2(gl_GlobalInvocationID.xy);
     while ((bits > top) || (bits < bottom)) {
         const int signed_step = bits > top ? +step : -step;
         quant = clamp(quant + signed_step, 0, q_ceil-1);
@@ -147,8 +156,20 @@ void main() {
         quant_buf[0] = quant;
         bits_last = bits;
     }
-    uint slice_index = gl_GlobalInvocationID.y * num_slices.x + gl_GlobalInvocationID.x;
+    int bytes = ssize_round(bits >> 3);
     slice.args[slice_index].quant_idx = clamp(quant, 0, q_ceil-1);
-    slice.args[slice_index].bytes = ssize_round(bits >> 3);
+    slice.args[slice_index].bytes = bytes;
+    slice.args[slice_index].pb_start = bytes;
     barrier();
+    /* Prefix sum for all slices in current workgroup */
+    if (gl_LocalInvocationIndex == 0) {
+        for (int i = int(gl_WorkGroupID.x == 0); i < WORKGROUP_X; i++) {
+            int index = slice_index + i;
+            if (index >= max_index) {
+                return;
+            }
+            int prev_sum = slice.args[index - 1].pb_start;
+            slice.args[index].pb_start = slice.args[index].bytes + prev_sum;
+        }
+    }
 }

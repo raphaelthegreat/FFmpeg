@@ -273,6 +273,7 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
     FFVulkanFunctions *vk = &vkctx->vkfn;
     VkImageView views[AV_NUM_DATA_POINTERS];
     uint32_t nb_buf_bar = 2;
+    uint32_t num_slice_groups = (s->num_x*s->num_y + 1023) >> 10;
     AVVkFrame *vkf = (AVVkFrame *)frame->data[0];
 
     VkBufferMemoryBarrier2 buf_bar[2] = {
@@ -395,7 +396,7 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
     ff_vk_exec_bind_pipeline(vkctx, exec, &s->slice_pl);
     ff_vk_update_push_exec(vkctx, exec, &s->slice_pl, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(VC2EncSliceCalcPushData), &s->calc_consts);
-    vk->CmdDispatch(exec->buf, 2, 1, 1);
+    vk->CmdDispatch(exec->buf, num_slice_groups, 1, 1);
 
     ff_vk_exec_submit(vkctx, exec);
     ff_vk_exec_wait(vkctx, exec);
