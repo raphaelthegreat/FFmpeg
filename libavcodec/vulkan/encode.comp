@@ -21,7 +21,7 @@ layout(std430, buffer_reference, buffer_reference_align = 16) buffer SliceArgBuf
 layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
     int coef_buf[];
 };
-layout(scalar, buffer_reference, buffer_reference_align = 4) buffer BitBuf {
+layout(scalar, buffer_reference, buffer_reference_align = 1) buffer BitBuf {
     uint data[];
 };
 layout(scalar, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
@@ -47,7 +47,7 @@ layout(push_constant, scalar) uniform ComputeInfo {
 #define BUF_BYTES 4
 
 int bit_buf = 0;
-int bit_left = 32;
+int bit_left = BUF_BITS;
 int write_start = 0;
 int write_ptr = 0;
 
@@ -71,7 +71,7 @@ void flush_put_bits() {
     if (bit_left_lo == 0) {
         uint data = pack32(unpack8(bit_buf).wzyx);
         pb.data[write_ptr++] = data;
-        bit_left = 32;
+        bit_left = BUF_BITS;
         bit_buf = 0;
     } else {
         bit_left = bit_left_lo;
@@ -166,7 +166,7 @@ void main() {
         int bytes_start = put_bytes_count();
 
         /* Save current location and write a zero value */
-        int write_start = write_ptr;
+        int write_ptr_start = write_ptr;
         int bit_left_start = bit_left;
         int chroma_shift = (p == 0 ? 0 : 1);
         ivec2 plane_dim = (slice_dim * num_slices) >> chroma_shift;
@@ -206,15 +206,8 @@ void main() {
             pad_s = align(bytes_len, size_scaler)/size_scaler;
             pad_c = (pad_s*size_scaler) - bytes_len;
         }
-        pb.data[write_start] |= (pad_s & 0xFF) << (BUF_BITS - bit_left_start);
+        pb.data[write_ptr_start] |= (pad_s & 0xFF) << (BUF_BITS - bit_left_start);
         /* vc2-reference uses that padding that decodes to '0' coeffs */
         skip_put_bytes(pad_c);
-    }
-
-    if ((write_ptr - write_start) != (slice_bytes_max >> 2)) {
-        debugPrintfEXT("(%d) MISMATCH (%d, %d) written %d slice_bytes_max %d\\n",
-                        num_frame,
-                       slice_coord.x, slice_coord.y,
-                      (write_ptr - write_start) * 4, slice_bytes_max);
     }
 }

@@ -427,7 +427,7 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
 
     flush_put_bits(&s->pb);
     uint8_t* vk_buf = put_bits_ptr(&s->pb);
-    s->enc_consts.pb += put_bytes_count(&s->pb, 0);
+    s->enc_consts.pb += put_bytes_output(&s->pb);
     s->enc_consts.num_frame = s->num_frame++;
 
     ff_vk_exec_bind_pipeline(vkctx, exec, &s->enc_pl);
@@ -464,22 +464,29 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
         }
     }
 
-    flush_put_bits(&s->pb);
-    uint8_t* buf = put_bits_ptr(&s->pb);
+    //uint8_t* buf = put_bits_ptr(&s->pb);
+    uint8_t* buf = malloc(1280 * 720 * 3 * sizeof(dwtcoef));
     int skip = 0;
     for (int slice_y = 0; slice_y < s->num_y; slice_y++) {
         for (int slice_x = 0; slice_x < s->num_x; slice_x++) {
             SliceArgs *args = &s->slice_args[s->num_x*slice_y + slice_x];
-            if (slice_x == 1 && slice_y == 20) {
-                printf("pb_start %d\n", skip);
-            }
             init_put_bits(&args->pb, buf + skip, args->bytes+s->prefix_bytes);
-            encode_hq_slice(s->avctx, args);
+            //encode_hq_slice(s->avctx, args);
             skip += args->bytes;
         }
     }
 
-    fflush(stdout);
+    /*int ret = memcmp(vk_buf, buf, skip);
+    if (ret != 0) {
+        uint32_t* vk_b = (uint32_t*)vk_buf;
+        uint32_t* b = (uint32_t*)buf;
+        for (int i = 0; i < skip >> 2; i++) {
+            printf("vk 0x%x cpu 0x%x\n", vk_b[i], b[i]);
+        }
+        printf("bad\n");
+    }*/
+    free(buf);
+
     skip_put_bytes(&s->pb, skip);
 
     /* Skip forward to write end header */
