@@ -36,6 +36,7 @@ layout(push_constant, scalar) uniform ComputeInfo {
     SliceArgBuf slice;
     ivec2 num_slices;
     ivec2 slice_dim;
+    ivec2 plane0_dim;
     int wavelet_depth;
     int quant_idx;
     int size_scaler;
@@ -81,7 +82,7 @@ int count_hq_slice(int quant_index) {
         int bytes_start = bits >> 3;
         bits += 8;
         int chroma_shift = (p == 0 ? 0 : 1);
-        ivec2 plane_dim = (slice_dim * num_slices) >> chroma_shift;
+        ivec2 plane_dim = plane0_dim >> chroma_shift;
         for (int level = 0; level < wavelet_depth; level++) {
             ivec2 band_dim = plane_dim >> (wavelet_depth - level);
             for (int o = int(level > 0); o < 4; o++) {

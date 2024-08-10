@@ -156,8 +156,8 @@ static void init_vulkan(AVCodecContext *avctx) {
         s->calc_consts.p[i] = dst_vk_buf->address + s->buf_plane_size * i;
         s->dwt_consts.src_buf[i] = src_vk_buf->address + s->buf_plane_size * i;
         s->dwt_consts.dst_buf[i] = dst_vk_buf->address + s->buf_plane_size * i;
-        s->dwt_consts.planes[i].width = p->dwt_width;
-        s->dwt_consts.planes[i].height = p->dwt_height;
+        s->dwt_consts.planes[i].width = p->width;
+        s->dwt_consts.planes[i].height = p->height;
         s->dwt_consts.planes[i].coef_stride = p->coef_stride;
     }
 
@@ -171,6 +171,8 @@ static void init_vulkan(AVCodecContext *avctx) {
     s->calc_consts.num_y = s->num_y;
     s->calc_consts.slice_dim_x = s->slice_width;
     s->calc_consts.slice_dim_y = s->slice_height;
+    s->calc_consts.plane_x = s->plane[0].dwt_width;
+    s->calc_consts.plane_y = s->plane[0].dwt_height;
     s->calc_consts.wavelet_depth = s->wavelet_depth;
     s->calc_consts.quant_idx = 0;
     s->calc_consts.prefix_bytes = s->prefix_bytes;
@@ -181,6 +183,8 @@ static void init_vulkan(AVCodecContext *avctx) {
     s->enc_consts.slice_y = s->slice_height;
     s->enc_consts.num_x = s->num_x;
     s->enc_consts.num_y = s->num_y;
+    s->enc_consts.plane_x = s->plane[0].dwt_width;
+    s->enc_consts.plane_y = s->plane[0].dwt_height;
 
     /* Create buffer for encoder auxilary data. */
     ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &dwt_buf,
@@ -321,8 +325,8 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
     };
 
     for (i = 0; i < 3; i++) {
-        copy.imageExtent.width = s->plane[i].dwt_width;
-        copy.imageExtent.height = s->plane[i].dwt_height;
+        copy.imageExtent.width = s->plane[i].width;
+        copy.imageExtent.height = s->plane[i].height;
         vk->CmdCopyImageToBuffer(exec->buf, vkf->img[0], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                  s->src_buf, 1, &copy);
         copy.bufferOffset += s->buf_plane_size;
@@ -451,6 +455,8 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
         coef_buf += s->buf_plane_size >> 2;
     }
 
+    //calc_slice_sizes(s);
+
     VC2EncSliceArgs* sl_args = vk_slice_args;
     for (int slice_y = 0; slice_y < s->num_y; slice_y++) {
         for (int slice_x = 0; slice_x < s->num_x; slice_x++) {
@@ -458,6 +464,9 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
             args->ctx = s;
             args->x   = slice_x;
             args->y   = slice_y;
+            if (args->bytes != sl_args->bytes || args->quant_idx != sl_args->quant_idx) {
+                //printf("BAD\n");
+            }
             args->bytes = sl_args->bytes;
             args->quant_idx = sl_args->quant_idx;
             sl_args++;
@@ -512,7 +521,7 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
 
     /* Perform Haar DWT pass on the inpute frame. */
     dwt_plane(s, exec, frame);
-    max_frame_bytes = header_size + s->avctx->width * s->avctx->height * 3 * sizeof(dwtcoef);
+    max_frame_bytes = header_size + s->avctx->width * s->avctx->height * 2 * sizeof(dwtcoef);
     s->custom_quant_matrix = 0;
 
     AVBufferRef* buf_backup;

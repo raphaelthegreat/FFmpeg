@@ -154,6 +154,8 @@ typedef struct VC2EncPushData {
     int num_y;
     int slice_x;
     int slice_y;
+    int plane_x;
+    int plane_y;
     int wavelet_depth;
     int quant_idx;
     int size_scaler;
@@ -176,6 +178,8 @@ typedef struct VC2EncSliceCalcPushData {
     int num_y;
     int slice_dim_x;
     int slice_dim_y;
+    int plane_x;
+    int plane_y;
     int wavelet_depth;
     int quant_idx;
     int size_scaler;
