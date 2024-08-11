@@ -134,7 +134,7 @@ typedef struct VC2DwtPushData {
     int s;
     int diff_offset;
     int level;
-    int pad;
+    int wavelet_type;
     VC2DwtPlane planes[3];
     VkDeviceAddress src_buf[3];
     VkDeviceAddress dst_buf[3];

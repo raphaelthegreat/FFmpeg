@@ -18,11 +18,14 @@ struct Plane {
     int pad;
 };
 
+#define VC2_TRANSFORM_HAAR (0)
+#define VC2_TRANSFORM_5_3 (1)
+
 layout(push_constant, scalar) uniform ComputeInfo {
     int s;
     int diff_offset;
     int level;
-    int pad;
+    int wavelet_type;
     Plane planes[3];
     PlaneBuf src_buf[3];
     DwtCoef dst_buf[3];
@@ -38,5 +41,10 @@ void main() {
     int stride = planes[plane_idx].coef_stride;
     uint coef_idx = coord.y * stride + coord.x;
     uint8_t texel = src_buf[plane_idx].data[coef_idx];
-    dst_buf[plane_idx].coef_buf[coef_idx] = int(texel - diff_offset);
+    int result = int(texel - diff_offset);
+    if (wavelet_type == VC2_TRANSFORM_5_3) {
+        // Shift in one bit that is used for additional precision
+        result <<= 1;
+    }
+    dst_buf[plane_idx].coef_buf[coef_idx] = result;
 }

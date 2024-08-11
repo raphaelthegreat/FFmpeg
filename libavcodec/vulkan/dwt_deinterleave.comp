@@ -13,11 +13,14 @@ struct Plane {
     int pad;
 };
 
+#define VC2_TRANSFORM_HAAR (0)
+#define VC2_TRANSFORM_5_3 (1)
+
 layout(push_constant, scalar) uniform ComputeInfo {
     int s;
     int diff_offset;
     int level;
-    int pad;
+    int wavelet_type;
     Plane planes[3];
     DwtCoef src_buf[3];
     DwtCoef dst_buf[3];
