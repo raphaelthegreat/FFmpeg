@@ -13,6 +13,10 @@ struct Plane {
     int pad;
 };
 
+#define VC2_TRANSFORM_HAAR (3)
+#define VC2_TRANSFORM_HAAR_S (4)
+#define VC2_TRANSFORM_5_3 (1)
+
 layout(push_constant, scalar) uniform ComputeInfo {
     int s;
     int diff_offset;
@@ -30,14 +34,50 @@ void main() {
     uint plane_idx = gl_GlobalInvocationID.z;
     ivec2 coord_y = coord << ivec2(0, 1);
     ivec2 work_area = planes[plane_idx].dim >> level;
-    if (any(greaterThanEqual(coord_y, work_area))) {
-        return;
+    ivec2 dwt_area = work_area >> 1;
+    if (wavelet_type == VC2_TRANSFORM_HAAR || wavelet_type == VC2_TRANSFORM_HAAR_S) {
+        if (any(greaterThanEqual(coord_y, work_area))) {
+            return;
+        }
+        int stride = planes[plane_idx].coef_stride;
+        int a = dst_buf[plane_idx].coef_buf[coord_y.y * stride + coord_y.x];
+        int b = dst_buf[plane_idx].coef_buf[(coord_y.y + 1) * stride + coord_y.x];
+        int dst_b = b - a;
+        int dst_a = a + ((dst_b + 1) >> 1);
+        dst_buf[plane_idx].coef_buf[coord_y.y * stride + coord_y.x] = dst_a;
+        dst_buf[plane_idx].coef_buf[(coord_y.y + 1) * stride + coord_y.x] = dst_b;
+    } else {
+        if (any(greaterThanEqual(coord, work_area))) {
+            return;
+        }
+        int stride = planes[plane_idx].coef_stride;
+        int index = stride * coord.y + coord.x;
+        // Lifting stage 2
+        if (coord.y > 0 && coord.y < work_area.y - 1 && (((coord.y - 1) & 1) == 0)) {
+            int a = dst_buf[plane_idx].coef_buf[index];
+            int b = dst_buf[plane_idx].coef_buf[stride * (coord.y - 1) + coord.x];
+            int c = dst_buf[plane_idx].coef_buf[stride * (coord.y + 1) + coord.x];
+            a -= (b + c + 1) >> 1;
+            dst_buf[plane_idx].coef_buf[index] = a;
+        } else if (coord.y == work_area.y - 1) {
+            int a = dst_buf[plane_idx].coef_buf[index];
+            int b = dst_buf[plane_idx].coef_buf[stride * (coord.y - 1) + coord.x];
+            a -= (2 * b + 1) >> 1;
+            dst_buf[plane_idx].coef_buf[index] = a;
+        }
+
+        // Lifting stage 1
+        if (coord.y == 0) {
+            int a = dst_buf[plane_idx].coef_buf[index];
+            int b = dst_buf[plane_idx].coef_buf[stride * (coord.y + 1) + coord.x];
+            a += (2 * b + 2) >> 2;
+            dst_buf[plane_idx].coef_buf[index] = a;
+        } else if ((coord.y & 1) == 0) {
+            int a = dst_buf[plane_idx].coef_buf[index];
+            int b = dst_buf[plane_idx].coef_buf[stride * (coord.y - 1) + coord.x];
+            int c = dst_buf[plane_idx].coef_buf[stride * (coord.y + 1) + coord.x];
+            a += (c + b + 2) >> 2;
+            dst_buf[plane_idx].coef_buf[index] = a;
+        }
     }
-    int stride = planes[plane_idx].coef_stride;
-    int a = dst_buf[plane_idx].coef_buf[coord_y.y * stride + coord_y.x];
-    int b = dst_buf[plane_idx].coef_buf[(coord_y.y + 1) * stride + coord_y.x];
-    int dst_b = b - a;
-    int dst_a = a + ((dst_b + 1) >> 1);
-    dst_buf[plane_idx].coef_buf[coord_y.y * stride + coord_y.x] = dst_a;
-    dst_buf[plane_idx].coef_buf[(coord_y.y + 1) * stride + coord_y.x] = dst_b;
 }

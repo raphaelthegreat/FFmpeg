@@ -13,7 +13,8 @@ struct Plane {
     int pad;
 };
 
-#define VC2_TRANSFORM_HAAR (0)
+#define VC2_TRANSFORM_HAAR (3)
+#define VC2_TRANSFORM_HAAR_S (4)
 #define VC2_TRANSFORM_5_3 (1)
 
 layout(push_constant, scalar) uniform ComputeInfo {
@@ -34,11 +35,11 @@ void main() {
     ivec2 coord_x = coord << ivec2(1, 0);
     ivec2 work_area = planes[plane_idx].dim >> level;
     ivec2 dwt_area = work_area >> 1;
-    int start = planes[plane_idx].coef_stride * coord_x.y;
-    if (wavelet_type == VC2_TRANSFORM_HAAR) {
+    if (wavelet_type == VC2_TRANSFORM_HAAR || wavelet_type == VC2_TRANSFORM_HAAR_S) {
         if (any(greaterThanEqual(coord_x, work_area))) {
             return;
         }
+        int start = planes[plane_idx].coef_stride * coord_x.y;
         int a = src_buf[plane_idx].coef_buf[start + coord_x.x];
         int b = src_buf[plane_idx].coef_buf[start + coord_x.x + 1];
         int dst_b = (b - a) * (1 << s);
@@ -46,23 +47,24 @@ void main() {
         dst_buf[plane_idx].coef_buf[start + coord_x.x] = dst_a;
         dst_buf[plane_idx].coef_buf[start + coord_x.x + 1] = dst_b;
     } else {
+        // Shift in one bit that is used for additional precision
+        int start = planes[plane_idx].coef_stride * coord.y;
+        dst_buf[plane_idx].coef_buf[start + coord.x] = src_buf[plane_idx].coef_buf[start + coord.x] << 1;
         if (any(greaterThanEqual(coord, dwt_area))) {
             return;
         }
         // Lifting stage 2
         if (coord.x < dwt_area.x - 1) {
-            int a = src_buf[plane_idx].coef_buf[start + 2 * coord.x + 1];
-            int b = src_buf[plane_idx].coef_buf[start + 2 * coord.x];
-            int c = src_buf[plane_idx].coef_buf[start + 2 * (coord.x + 1)];
+            int a = dst_buf[plane_idx].coef_buf[start + 2 * coord.x + 1];
+            int b = dst_buf[plane_idx].coef_buf[start + 2 * coord.x];
+            int c = dst_buf[plane_idx].coef_buf[start + 2 * (coord.x + 1)];
             a -= (b + c + 1) >> 1;
             dst_buf[plane_idx].coef_buf[start + 2 * coord.x + 1] = a;
-            dst_buf[plane_idx].coef_buf[start + 2 * coord.x] = b;
-            dst_buf[plane_idx].coef_buf[start + 2 * (coord.x + 1)] = b;
         } else {
-            int a = src_buf[plane_idx].coef_buf[start + dwt_area.x - 1];
-            int b = src_buf[plane_idx].coef_buf[start + dwt_area.x - 2];
+            int a = dst_buf[plane_idx].coef_buf[start + work_area.x - 1];
+            int b = dst_buf[plane_idx].coef_buf[start + work_area.x - 2];
             a -= (2 * b + 1) >> 1;
-            dst_buf[plane_idx].coef_buf[start + dwt_area.x - 1] = a;
+            dst_buf[plane_idx].coef_buf[start + work_area.x - 1] = a;
         }
 
         // Lifting stage 1
@@ -74,14 +76,12 @@ void main() {
             int c = dst_buf[plane_idx].coef_buf[start + 2 * coord.x + 1];
             a += (b + c + 2) >> 2;
             dst_buf[plane_idx].coef_buf[start + 2 * coord.x] = a;
-            dst_buf[plane_idx].coef_buf[start + 2 * coord.x - 1] = b;
-            dst_buf[plane_idx].coef_buf[start + 2 * coord.x + 1] = c;
         } else {
-            int a = dst_buf[plane_idx].coef_buf[start + dwt_area.x - 2];
-            int b = dst_buf[plane_idx].coef_buf[start + dwt_area.x - 1];
-            int c = dst_buf[plane_idx].coef_buf[start + dwt_area.x - 3];
+            int a = dst_buf[plane_idx].coef_buf[start + work_area.x - 2];
+            int b = dst_buf[plane_idx].coef_buf[start + work_area.x - 1];
+            int c = dst_buf[plane_idx].coef_buf[start + work_area.x - 3];
             a += (c + b + 2) >> 2;
-            dst_buf[plane_idx].coef_buf[start + dwt_area.x - 2] = a;
+            dst_buf[plane_idx].coef_buf[start + work_area.x - 2] = a;
         }
     }
 }

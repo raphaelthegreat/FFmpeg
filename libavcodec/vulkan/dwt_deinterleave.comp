@@ -13,7 +13,8 @@ struct Plane {
     int pad;
 };
 
-#define VC2_TRANSFORM_HAAR (0)
+#define VC2_TRANSFORM_HAAR (3)
+#define VC2_TRANSFORM_HAAR_S (4)
 #define VC2_TRANSFORM_5_3 (1)
 
 layout(push_constant, scalar) uniform ComputeInfo {
