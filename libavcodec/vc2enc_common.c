@@ -447,9 +447,6 @@ static int count_hq_slice(SliceArgs *slice, int quant_idx)
                         uint32_t c_abs = (FFABS(buf[x]));
                         bits += count_vc2_ue_uint(c_abs);
                         bits += !!c_abs;
-                        if (slice->x == 0 && slice->y == 0) {
-                            printf("coef %d bits %d\n", buf[x], bits);
-                        }
                     }
                     buf += b->stride;
                 }
@@ -460,9 +457,6 @@ static int count_hq_slice(SliceArgs *slice, int quant_idx)
         pad_s = FFALIGN(bytes_len, s->size_scaler)/s->size_scaler;
         pad_c = (pad_s*s->size_scaler) - bytes_len;
         bits += pad_c*8;
-        if (slice->x == 0 && slice->y == 0) {
-            printf("End plane bytes_len %d bits %d\n", bytes_len, bits);
-        }
     }
 
     slice->cache[quant_idx] = bits;

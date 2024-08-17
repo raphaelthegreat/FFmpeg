@@ -23,6 +23,7 @@
 #include "libavutil/attributes.h"
 #include "libavutil/mem.h"
 #include "vc2enc_dwt.h"
+#include <stdio.h>
 
 /* Since the transforms spit out interleaved coefficients, this function
  * rearranges the coefficients into the more traditional subdivision,
@@ -174,6 +175,10 @@ static void vc2_subband_dwt_53(VC2TransformContext *t, dwtcoef *data,
 
         synthl += synth_width;
     }
+
+    FILE* file = fopen("plane0.bin", "w");
+    fwrite(synth, 4, synth_width * synth_height, file);
+    fclose(file);
 
     /* Vertical synthesis: Lifting stage 2. */
     synthl = synth + synth_width;

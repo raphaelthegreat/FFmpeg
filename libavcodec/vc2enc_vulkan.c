@@ -316,6 +316,7 @@ static void dwt_plane_legall(VC2EncContext *s, FFVkExecContext *exec, VkBufferMe
                                                .pBufferMemoryBarriers = buf_bar,
                                                .bufferMemoryBarrierCount = nb_buf_bar,
                                            });
+        //break;
         /* Vertical Haar pass */
         ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_ver_pl);
         ff_vk_update_push_exec(vkctx, exec, &s->dwt_ver_pl, VK_SHADER_STAGE_COMPUTE_BIT,
@@ -481,6 +482,11 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
     ff_vk_exec_wait(vkctx, exec);
 
     dwtcoef* coef_buf = (dwtcoef*)dst_plane_dat;
+
+    FILE* file = fopen("plane0_vk.bin", "w");
+    fwrite(src_plane_dat, 4, s->plane[0].coef_stride * s->plane[0].dwt_height, file);
+    fclose(file);
+
     for (int i = 0; i < 3; i++) {
         Plane* p = &s->plane[i];
         for (int level = s->wavelet_depth-1; level >= 0; level--) {

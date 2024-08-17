@@ -43,7 +43,7 @@ const char *ff_source_dwt_hor_legall_comp =
 "    int start = planes[plane_idx].coef_stride * coord_y;\n"
 "    \n"
 "    // Shift in one bit that is used for additional precision\n"
-"    for (int x = 0; x < work_area.y; x++) {\n"
+"    for (int x = 0; x < work_area.x; x++) {\n"
 "        dst.coef_buf[start + x] = src.coef_buf[start + x] << 1;\n"
 "    }\n"
 "\n"

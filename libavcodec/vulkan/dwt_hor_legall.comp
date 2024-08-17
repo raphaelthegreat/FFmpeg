@@ -41,7 +41,7 @@ void main() {
     int start = planes[plane_idx].coef_stride * coord_y;
     
     // Shift in one bit that is used for additional precision
-    for (int x = 0; x < work_area.y; x++) {
+    for (int x = 0; x < work_area.x; x++) {
         dst.coef_buf[start + x] = src.coef_buf[start + x] << 1;
     }
 
