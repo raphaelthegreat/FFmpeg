@@ -1,0 +1,55 @@
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_debug_printf : require
+#extension GL_EXT_buffer_reference : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
+    int coef_buf[];
+};
+
+struct Plane {
+    ivec2 dim;
+    int coef_stride;
+    int pad;
+};
+
+layout(push_constant, scalar) uniform ComputeInfo {
+    int s;
+    int diff_offset;
+    int level;
+    int wavelet_type;
+    Plane planes[3];
+    DwtCoef dst_buf[3];
+    DwtCoef src_buf[3];
+};
+
+void main() {
+    int coord_x = int(gl_GlobalInvocationID.x);
+    uint plane_idx = gl_GlobalInvocationID.z;
+    ivec2 work_area = planes[plane_idx].dim >> level;
+    if (coord_x >= work_area.x) {
+        return;
+    }
+
+    DwtCoef src = src_buf[plane_idx];
+    DwtCoef dst = dst_buf[plane_idx];
+    ivec2 dwt_area = work_area >> 1;
+    int stride = planes[plane_idx].coef_stride;
+
+    // Lifting stage 2
+    for (int y = 1; y < dwt_area.y - 1; y += 2) {
+        dst.coef_buf[stride * y + coord_x] -= (dst.coef_buf[stride * (y - 1) + coord_x] +
+                                               dst.coef_buf[stride * (y + 1) + coord_x] + 1) >> 1;
+    }
+    dst.coef_buf[stride * (work_area.y - 1) + coord_x] -= (2 * dst.coef_buf[stride * (work_area.y - 2) + coord_x] + 1) >> 1;
+
+    // Lifting stage 1
+    dst.coef_buf[coord_x] += (2 * dst.coef_buf[stride + coord_x] + 2) >> 2;
+    for (int y = 1; y < dwt_area.y - 1; y += 2) {
+        dst.coef_buf[stride * y + coord_x] += (dst.coef_buf[stride * (y + 1) + coord_x] +
+                                               dst.coef_buf[stride * (y - 1) + coord_x] + 2) >> 2;
+    }
+    dst.coef_buf[stride * (work_area.y - 2) + coord_x] += (dst.coef_buf[stride * (work_area.y - 3) + coord_x] +
+                                                           dst.coef_buf[stride * (work_area.y - 1) + coord_x] + 2) >> 2;
+}

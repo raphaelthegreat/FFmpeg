@@ -254,8 +254,8 @@ typedef struct VC2EncContext {
     FFVkQueueFamilyCtx qf;
     FFVkExecPool e;
 
-    FFVulkanPipeline dwt_upload_pl;
-    FFVulkanPipeline dwt_hor_pl, dwt_ver_pl, dwt_de_pl;
+    FFVulkanPipeline dwt_upload_pl, dwt_de_pl;
+    FFVulkanPipeline dwt_hor_pl, dwt_ver_pl;
     FFVulkanPipeline slice_pl;
     FFVulkanPipeline enc_pl;
     FFVkSPIRVShader shd;

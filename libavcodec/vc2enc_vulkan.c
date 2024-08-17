@@ -39,7 +39,9 @@
 
 extern const char *ff_source_encode_comp;
 extern const char *ff_source_dwt_hor_comp;
+extern const char *ff_source_dwt_hor_legall_comp;
 extern const char *ff_source_dwt_ver_comp;
+extern const char *ff_source_dwt_ver_legall_comp;
 extern const char *ff_source_slice_sizes_comp;
 extern const char *ff_source_dwt_upload_comp;
 extern const char *ff_source_dwt_deinterleave_comp;
@@ -223,10 +225,6 @@ static void init_vulkan(AVCodecContext *avctx) {
     /* Initialize encoding pipelines */
     init_vulkan_pipeline(s, spv, &s->dwt_upload_pl, sizeof(VC2DwtPushData),
                          "dwt_upload_pl", ff_source_dwt_upload_comp, 0);
-    init_vulkan_pipeline(s, spv, &s->dwt_hor_pl, sizeof(VC2DwtPushData),
-                         "dwt_hor_pl", ff_source_dwt_hor_comp, 0);
-    init_vulkan_pipeline(s, spv, &s->dwt_ver_pl, sizeof(VC2DwtPushData),
-                         "dwt_ver_pl", ff_source_dwt_ver_comp, 0);
     init_vulkan_pipeline(s, spv, &s->dwt_de_pl, sizeof(VC2DwtPushData),
                          "dwt_de_pl", ff_source_dwt_deinterleave_comp, 0);
     init_vulkan_pipeline(s, spv, &s->slice_pl, sizeof(VC2EncPushData),
@@ -234,54 +232,126 @@ static void init_vulkan(AVCodecContext *avctx) {
     init_vulkan_pipeline(s, spv, &s->enc_pl, sizeof(VC2EncPushData),
                          "enc_pl", ff_source_encode_comp, 0);
 
+    if (s->wavelet_idx == VC2_TRANSFORM_HAAR || s->wavelet_idx == VC2_TRANSFORM_HAAR_S) {
+        init_vulkan_pipeline(s, spv, &s->dwt_hor_pl, sizeof(VC2DwtPushData),
+                             "dwt_hor_pl", ff_source_dwt_hor_comp, 0);
+        init_vulkan_pipeline(s, spv, &s->dwt_ver_pl, sizeof(VC2DwtPushData),
+                             "dwt_ver_pl", ff_source_dwt_ver_comp, 0);
+    } else if (s->wavelet_idx == VC2_TRANSFORM_5_3) {
+        init_vulkan_pipeline(s, spv, &s->dwt_hor_pl, sizeof(VC2DwtPushData),
+                             "dwt_hor_pl", ff_source_dwt_hor_legall_comp, 0);
+        init_vulkan_pipeline(s, spv, &s->dwt_ver_pl, sizeof(VC2DwtPushData),
+                             "dwt_ver_pl", ff_source_dwt_ver_legall_comp, 0);
+    }
+
     s->group_x = s->plane[0].dwt_width >> 3;
     s->group_y = s->plane[0].dwt_height >> 3;
 }
 
-/*
- * Transform basics for a 3 level transform
- * |---------------------------------------------------------------------|
- * |  LL-0  | HL-0  |                 |                                  |
- * |--------|-------|      HL-1       |                                  |
- * |  LH-0  | HH-0  |                 |                                  |
- * |----------------|-----------------|              HL-2                |
- * |                |                 |                                  |
- * |     LH-1       |      HH-1       |                                  |
- * |                |                 |                                  |
- * |----------------------------------|----------------------------------|
- * |                                  |                                  |
- * |                                  |                                  |
- * |                                  |                                  |
- * |              LH-2                |              HH-2                |
- * |                                  |                                  |
- * |                                  |                                  |
- * |                                  |                                  |
- * |---------------------------------------------------------------------|
- *
- * DWT transforms are generally applied by splitting the image in two vertically
- * and applying a low pass transform on the left part and a corresponding high
- * pass transform on the right hand side. This is known as the horizontal filter
- * stage.
- * After that, the same operation is performed except the image is divided
- * horizontally, with the high pass on the lower and the low pass on the higher
- * side.
- * Therefore, you're left with 4 subdivisions - known as  low-low, low-high,
- * high-low and high-high. They're referred to as orientations in the decoder
- * and encoder.
- *
- * The LL (low-low) area contains the original image downsampled by the amount
- * of levels. The rest of the areas can be thought as the details needed
- * to restore the image perfectly to its original size.
- */
+static void dwt_plane_haar(VC2EncContext *s, FFVkExecContext *exec, VkBufferMemoryBarrier2* buf_bar,
+                           uint32_t nb_buf_bar) {
+    int i, group_x = s->group_x, group_y = s->group_y;
+    FFVulkanContext *vkctx = &s->vkctx;
+    FFVulkanFunctions *vk = &vkctx->vkfn;
+
+    /* Perform Haar wavelet trasform */
+    for (i = 0; i < s->wavelet_depth; i++) {
+        s->dwt_consts.level = i;
+
+        /* Horizontal Haar pass */
+        ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_hor_pl);
+        ff_vk_update_push_exec(vkctx, exec, &s->dwt_hor_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(VC2DwtPushData), &s->dwt_consts);
+        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
+        vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
+                                               .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                               .pBufferMemoryBarriers = buf_bar,
+                                               .bufferMemoryBarrierCount = nb_buf_bar,
+                                           });
+        /* Vertical Haar pass */
+        ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_ver_pl);
+        ff_vk_update_push_exec(vkctx, exec, &s->dwt_ver_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(VC2DwtPushData), &s->dwt_consts);
+        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
+        vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
+                                               .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                               .pBufferMemoryBarriers = buf_bar,
+                                               .bufferMemoryBarrierCount = nb_buf_bar,
+                                           });
+
+        /* Deinterleave Haar pass */
+        ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_de_pl);
+        ff_vk_update_push_exec(vkctx, exec, &s->dwt_de_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(VC2DwtPushData), &s->dwt_consts);
+        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
+        vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
+                                               .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                               .pBufferMemoryBarriers = buf_bar,
+                                               .bufferMemoryBarrierCount = nb_buf_bar,
+                                           });
+
+        /* Reduce work area to next level. */
+        group_x = (group_x + 1) >> 1;
+        group_y = (group_y + 1) >> 1;
+    }
+}
+
+static void dwt_plane_legall(VC2EncContext *s, FFVkExecContext *exec, VkBufferMemoryBarrier2* buf_bar,
+                            uint32_t nb_buf_bar) {
+    int i, group_x = s->group_x, group_y = s->group_y;
+    FFVulkanContext *vkctx = &s->vkctx;
+    FFVulkanFunctions *vk = &vkctx->vkfn;
+
+    /* Perform Haar wavelet trasform */
+    for (i = 0; i < s->wavelet_depth; i++) {
+        s->dwt_consts.level = i;
+
+        /* Horizontal Haar pass */
+        ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_hor_pl);
+        ff_vk_update_push_exec(vkctx, exec, &s->dwt_hor_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(VC2DwtPushData), &s->dwt_consts);
+        vk->CmdDispatch(exec->buf, (s->plane[0].dwt_height + 63) >> 6, 1, 3);
+        vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
+                                               .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                               .pBufferMemoryBarriers = buf_bar,
+                                               .bufferMemoryBarrierCount = nb_buf_bar,
+                                           });
+        /* Vertical Haar pass */
+        ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_ver_pl);
+        ff_vk_update_push_exec(vkctx, exec, &s->dwt_ver_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(VC2DwtPushData), &s->dwt_consts);
+        vk->CmdDispatch(exec->buf, (s->plane[0].dwt_width + 63) >> 6, 1, 3);
+        vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
+                                               .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                               .pBufferMemoryBarriers = buf_bar,
+                                               .bufferMemoryBarrierCount = nb_buf_bar,
+                                           });
+
+        /* Deinterleave Haar pass */
+        ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_de_pl);
+        ff_vk_update_push_exec(vkctx, exec, &s->dwt_de_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(VC2DwtPushData), &s->dwt_consts);
+        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
+        vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
+                                               .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                               .pBufferMemoryBarriers = buf_bar,
+                                               .bufferMemoryBarrierCount = nb_buf_bar,
+                                           });
+
+        /* Reduce work area to next level. */
+        group_x = (group_x + 1) >> 1;
+        group_y = (group_y + 1) >> 1;
+    }
+}
+
 static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
 {
     int i, group_x = s->group_x, group_y = s->group_y, ret;
     FFVulkanContext *vkctx = &s->vkctx;
     FFVulkanFunctions *vk = &vkctx->vkfn;
-    VkImageView views[AV_NUM_DATA_POINTERS];
-    uint32_t nb_buf_bar = 2;
-    uint32_t num_slice_groups = (s->num_x*s->num_y + 1023) >> 10;
     AVVkFrame *vkf = (AVVkFrame *)frame->data[0];
+    uint32_t num_slice_groups = (s->num_x*s->num_y + 1023) >> 10;
+    uint32_t nb_buf_bar = 2;
 
     VkBufferMemoryBarrier2 buf_bar[2] = {
         [0] = (VkBufferMemoryBarrier2) {
@@ -359,44 +429,10 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
     vk->CmdDispatch(exec->buf, group_x, group_y, 3);
 
     /* Perform Haar wavelet trasform */
-    for (i = 0; i < s->wavelet_depth; i++) {
-        s->dwt_consts.level = i;
-
-        /* Horizontal Haar pass */
-        ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_hor_pl);
-        ff_vk_update_push_exec(vkctx, exec, &s->dwt_hor_pl, VK_SHADER_STAGE_COMPUTE_BIT,
-                               0, sizeof(VC2DwtPushData), &s->dwt_consts);
-        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
-        vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
-                                               .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                               .pBufferMemoryBarriers = buf_bar,
-                                               .bufferMemoryBarrierCount = nb_buf_bar,
-                                           });
-        /* Vertical Haar pass */
-        ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_ver_pl);
-        ff_vk_update_push_exec(vkctx, exec, &s->dwt_ver_pl, VK_SHADER_STAGE_COMPUTE_BIT,
-                               0, sizeof(VC2DwtPushData), &s->dwt_consts);
-        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
-        vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
-                                               .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                               .pBufferMemoryBarriers = buf_bar,
-                                               .bufferMemoryBarrierCount = nb_buf_bar,
-                                           });
-
-        /* Deinterleave Haar pass */
-        ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_de_pl);
-        ff_vk_update_push_exec(vkctx, exec, &s->dwt_de_pl, VK_SHADER_STAGE_COMPUTE_BIT,
-                               0, sizeof(VC2DwtPushData), &s->dwt_consts);
-        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
-        vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
-                                               .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                               .pBufferMemoryBarriers = buf_bar,
-                                               .bufferMemoryBarrierCount = nb_buf_bar,
-                                           });
-
-        /* Reduce work area to next level. */
-        group_x = (group_x + 1) >> 1;
-        group_y = (group_y + 1) >> 1;
+    if (s->wavelet_idx == VC2_TRANSFORM_HAAR || s->wavelet_idx == VC2_TRANSFORM_HAAR_S) {
+        dwt_plane_haar(s, exec, buf_bar, nb_buf_bar);
+    } else if (s->wavelet_idx == VC2_TRANSFORM_5_3) {
+        dwt_plane_legall(s, exec, buf_bar, nb_buf_bar);
     }
 
     /* Calculate slice sizes. */
@@ -817,7 +853,6 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
             s->qmagic_lut[i][1] = t;
         }
     }
-
     init_vulkan(avctx);
 
     return 0;
