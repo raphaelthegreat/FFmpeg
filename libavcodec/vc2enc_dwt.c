@@ -176,10 +176,6 @@ static void vc2_subband_dwt_53(VC2TransformContext *t, dwtcoef *data,
         synthl += synth_width;
     }
 
-    FILE* file = fopen("plane0.bin", "w");
-    fwrite(synth, 4, synth_width * synth_height, file);
-    fclose(file);
-
     /* Vertical synthesis: Lifting stage 2. */
     synthl = synth + synth_width;
     for (x = 0; x < synth_width; x++)
@@ -212,6 +208,9 @@ static void vc2_subband_dwt_53(VC2TransformContext *t, dwtcoef *data,
     for (x = 0; x < synth_width; x++)
         synthl[x] += (synthl[x - synth_width] + synthl[x + synth_width] + 2) >> 2;
 
+    FILE* file = fopen("plane0.bin", "w");
+    fwrite(synth, 4, synth_width * synth_height, file);
+    fclose(file);
 
     deinterleave(data, stride, width, height, synth);
 }

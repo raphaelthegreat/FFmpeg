@@ -32,13 +32,12 @@ void main() {
         return;
     }
 
-    DwtCoef src = src_buf[plane_idx];
     DwtCoef dst = dst_buf[plane_idx];
     ivec2 dwt_area = work_area >> 1;
     int stride = planes[plane_idx].coef_stride;
 
     // Lifting stage 2
-    for (int y = 1; y < dwt_area.y - 1; y += 2) {
+    for (int y = 1; y < work_area.y - 2; y += 2) {
         dst.coef_buf[stride * y + coord_x] -= (dst.coef_buf[stride * (y - 1) + coord_x] +
                                                dst.coef_buf[stride * (y + 1) + coord_x] + 1) >> 1;
     }
@@ -46,7 +45,7 @@ void main() {
 
     // Lifting stage 1
     dst.coef_buf[coord_x] += (2 * dst.coef_buf[stride + coord_x] + 2) >> 2;
-    for (int y = 1; y < dwt_area.y - 1; y += 2) {
+    for (int y = 2; y < work_area.y - 2; y += 2) {
         dst.coef_buf[stride * y + coord_x] += (dst.coef_buf[stride * (y + 1) + coord_x] +
                                                dst.coef_buf[stride * (y - 1) + coord_x] + 2) >> 2;
     }

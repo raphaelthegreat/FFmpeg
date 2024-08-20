@@ -327,6 +327,7 @@ static void dwt_plane_legall(VC2EncContext *s, FFVkExecContext *exec, VkBufferMe
                                                .pBufferMemoryBarriers = buf_bar,
                                                .bufferMemoryBarrierCount = nb_buf_bar,
                                            });
+        //break;
 
         /* Deinterleave Haar pass */
         ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_de_pl);
