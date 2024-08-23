@@ -2,9 +2,7 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_debug_printf : require
 
-// TODO: Process pixels in parallel
 #define WORKGROUP_X 1024
-
 layout(local_size_x = WORKGROUP_X, local_size_y = 1, local_size_z = 1) in;
 
 #define MAX_DWT_LEVELS (5)
@@ -94,11 +92,13 @@ void skip_put_bytes(int n) {
         bit_left -= n_bits;
         return;
     }
-    int mask = (1 << bit_left) - 1;
-    bit_buf <<= bit_left;
-    bit_buf |= mask;
-    pb.data[write_ptr++] = pack32(unpack8(bit_buf).wzyx);
-    n -= bit_left >> 3;
+    if (bit_left < 32) {
+        int mask = (1 << bit_left) - 1;
+        bit_buf <<= bit_left;
+        bit_buf |= mask;
+        pb.data[write_ptr++] = pack32(unpack8(bit_buf).wzyx);
+        n -= bit_left >> 3;
+    }
     int skip_dwords = n >> 2;
     while (skip_dwords > 0) {
         pb.data[write_ptr++] = 0xFFFFFFFF;
@@ -139,6 +139,8 @@ int align(int x, int a) {
     return (x + a - 1) & ~(a - 1);
 }
 
+int quants[MAX_DWT_LEVELS][4];
+
 void main() {
     int slice_index = int(gl_GlobalInvocationID.x);
     int max_index = num_slices.x * num_slices.y;
@@ -157,9 +159,14 @@ void main() {
     write_start = write_ptr;
 
     int slice_bytes_max = slice.args[slice_index].bytes;
+    int quant_index = slice.args[slice_index].quant_idx;
+
+    for (int level = 0; level < wavelet_depth; level++)
+        for (int orientation = int(level > 0); orientation < 4; orientation++)
+            quants[level][orientation] = max(quant_index - luts.quant[level][orientation], 0);
 
     /* Write quant index for this slice */
-    put_bits(8, slice.args[slice_index].quant_idx);
+    put_bits(8, quant_index);
 
     /* Luma + 2 Chroma planes */
     for (int p = 0; p < 3; p++) {
@@ -181,6 +188,9 @@ void main() {
                 int top = band_size.y * (slice_coord.y) / num_slices.y;
                 int bottom = band_size.y * (slice_coord.y+1) / num_slices.y;
 
+                const int q_idx = quants[level][o];
+                const int qfactor = luts.ff_dirac_qscale_tab[q_idx];
+
                 int stride = plane_dim.x;
                 int band_ptr = int(o > 1) * band_size.y * stride + (o & 1) * band_size.x;
                 int start = band_ptr + top * stride;
@@ -188,6 +198,7 @@ void main() {
                     for (int x = left; x < right; x++) {
                         int coef = planes[p].coef_buf[start + x];
                         uint c_abs = uint(abs(coef));
+                        c_abs = (c_abs << 2) / qfactor;
                         put_vc2_ue_uint(c_abs);
                         if (c_abs != 0) {
                             put_bits(1, int(coef < 0));
@@ -206,6 +217,9 @@ void main() {
         } else {
             pad_s = align(bytes_len, size_scaler)/size_scaler;
             pad_c = (pad_s*size_scaler) - bytes_len;
+        }
+        if (gl_GlobalInvocationID.x == 0) {
+            debugPrintfEXT("Gpu write_ptr_start %d bit_left_start %d\\n", write_ptr_start, bit_left_start);
         }
         pb.data[write_ptr_start] |= (pad_s & 0xFF) << (BUF_BITS - bit_left_start);
         /* vc2-reference uses that padding that decodes to '0' coeffs */

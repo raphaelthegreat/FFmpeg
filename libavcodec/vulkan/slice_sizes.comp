@@ -2,9 +2,7 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_debug_printf : require
 
-// TODO make parallel
 #define WORKGROUP_X 1024
-
 layout(local_size_x = WORKGROUP_X, local_size_y = 1, local_size_z = 1) in;
 
 #define DIRAC_MAX_QUANT_INDEX 116
@@ -21,7 +19,7 @@ layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
     int coef_buf[];
 };
 
-layout(std430, buffer_reference, buffer_reference_align = 16) buffer SliceArgBuf {
+layout(std430, buffer_reference) buffer SliceArgBuf {
     SliceArgs args[];
 };
 
@@ -43,6 +41,7 @@ layout(push_constant, scalar) uniform ComputeInfo {
     int prefix_bytes;
     int bits_ceil;
     int bits_floor;
+    int num_frame;
 };
 
 int count_vc2_ue_uint(uint val) {
@@ -66,6 +65,7 @@ int ffalign(int x, int a) {
 }
 
 int cache[DIRAC_MAX_QUANT_INDEX];
+int quants[MAX_DWT_LEVELS][4];
 
 int count_hq_slice(int quant_index) {
     int bits = 0;
@@ -75,6 +75,10 @@ int count_hq_slice(int quant_index) {
 
     bits += 8*prefix_bytes;
     bits += 8; /* quant_idx */
+
+    for (int level = 0; level < wavelet_depth; level++)
+        for (int orientation = int(level > 0); orientation < 4; orientation++)
+            quants[level][orientation] = max(quant_index - luts.quant[level][orientation], 0);
 
     int slice_index = int(gl_GlobalInvocationID.x);
     ivec2 slice_coord = ivec2(slice_index % num_slices.x, slice_index / num_slices.x);
@@ -91,6 +95,9 @@ int count_hq_slice(int quant_index) {
                 const int top = band_dim.y * slice_coord.y / num_slices.y;
                 const int bottom = band_dim.y * (slice_coord.y+1) / num_slices.y;
 
+                const int q_idx = quants[level][o];
+                const int qfactor = luts.ff_dirac_qscale_tab[q_idx];
+
                 const int stride = plane_dim.x;
                 const int band_ptr = int(o > 1) * band_dim.y * stride + (o & 1) * band_dim.x;
                 int start = band_ptr + top * stride;
@@ -98,6 +105,7 @@ int count_hq_slice(int quant_index) {
                     for (int x = left; x < right; x++) {
                         int coef = planes[p].coef_buf[start + x];
                         uint c_abs = uint(abs(coef));
+                        c_abs = (c_abs << 2) / qfactor;
                         bits += count_vc2_ue_uint(c_abs);
                         bits += int(c_abs > 0);
                     }
@@ -110,16 +118,13 @@ int count_hq_slice(int quant_index) {
         int pad_s = ffalign(bytes_len, size_scaler) / size_scaler;
         int pad_c = (pad_s * size_scaler) - bytes_len;
         bits += pad_c * 8;
+        if (slice_index == 1064) {
+            debugPrintfEXT("Gpu End bits %d\\n", bits);
+        }
     }
 
     cache[quant_index] = bits;
     return bits;
-}
-
-int av_rescale(int a, int b, int c) {
-    // TODO: This won't overflow, right?
-    const int r = c / 2;
-    return (a * b + r) / c;
 }
 
 int ssize_round(int b) {
@@ -139,7 +144,7 @@ void main() {
     const int top = bits_ceil;
     const int bottom = bits_floor;
     int quant_buf[2] = int[2](-1, -1);
-    int quant = quant_idx;
+    int quant = slice.args[slice_index].quant_idx;
     int step = 1;
     int bits_last = 0;
     int bits = count_hq_slice(quant);

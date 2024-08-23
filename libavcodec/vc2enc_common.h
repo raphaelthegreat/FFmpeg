@@ -186,6 +186,7 @@ typedef struct VC2EncSliceCalcPushData {
     int prefix_bytes;
     int bits_ceil;
     int bits_floor;
+    int num_frame;
 } VC2EncSliceCalcPushData;
 
 typedef struct VC2EncContext {

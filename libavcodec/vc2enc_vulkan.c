@@ -191,7 +191,7 @@ static void init_vulkan(AVCodecContext *avctx) {
 
     /* Create buffer for encoder auxilary data. */
     ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &dwt_buf,
-                                  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, NULL,
+                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
                                   sizeof(VC2EncAuxData),
                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
@@ -254,6 +254,12 @@ static void dwt_plane_haar(VC2EncContext *s, FFVkExecContext *exec, VkBufferMemo
     FFVulkanContext *vkctx = &s->vkctx;
     FFVulkanFunctions *vk = &vkctx->vkfn;
 
+    vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
+                                           .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                           .pBufferMemoryBarriers = buf_bar,
+                                           .bufferMemoryBarrierCount = nb_buf_bar,
+                                       });
+
     /* Perform Haar wavelet trasform */
     for (i = 0; i < s->wavelet_depth; i++) {
         s->dwt_consts.level = i;
@@ -301,6 +307,12 @@ static void dwt_plane_legall(VC2EncContext *s, FFVkExecContext *exec, VkBufferMe
     int i, group_x = s->group_x, group_y = s->group_y;
     FFVulkanContext *vkctx = &s->vkctx;
     FFVulkanFunctions *vk = &vkctx->vkfn;
+
+    vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
+                                           .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                           .pBufferMemoryBarriers = buf_bar,
+                                           .bufferMemoryBarrierCount = nb_buf_bar,
+                                       });
 
     /* Perform Haar wavelet trasform */
     for (i = 0; i < s->wavelet_depth; i++) {
@@ -437,6 +449,8 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
         dwt_plane_legall(s, exec, buf_bar, nb_buf_bar);
     }
 
+    s->calc_consts.num_frame = ++s->num_frame;
+
     /* Calculate slice sizes. */
     ff_vk_exec_bind_pipeline(vkctx, exec, &s->slice_pl);
     ff_vk_update_push_exec(vkctx, exec, &s->slice_pl, VK_SHADER_STAGE_COMPUTE_BIT,
@@ -471,7 +485,7 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
     flush_put_bits(&s->pb);
     uint8_t* vk_buf = put_bits_ptr(&s->pb);
     s->enc_consts.pb += put_bytes_output(&s->pb);
-    s->enc_consts.num_frame = s->num_frame++;
+    s->enc_consts.num_frame = s->num_frame;
 
     ff_vk_exec_bind_pipeline(vkctx, exec, &s->enc_pl);
     ff_vk_update_push_exec(vkctx, exec, &s->enc_pl, VK_SHADER_STAGE_COMPUTE_BIT,
@@ -485,7 +499,7 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
     dwtcoef* coef_buf = (dwtcoef*)dst_plane_dat;
 
     FILE* file = fopen("plane0_vk.bin", "w");
-    fwrite(src_plane_dat, 4, s->plane[0].coef_stride * s->plane[0].dwt_height, file);
+    fwrite(dst_plane_dat, 4, s->plane[0].coef_stride * s->plane[0].dwt_height, file);
     fclose(file);
 
     for (int i = 0; i < 3; i++) {
@@ -499,9 +513,10 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
         coef_buf += s->buf_plane_size >> 2;
     }
 
-    //calc_slice_sizes(s);
+    calc_slice_sizes(s);
 
     VC2EncSliceArgs* sl_args = vk_slice_args;
+    int slice_index = 0;
     for (int slice_y = 0; slice_y < s->num_y; slice_y++) {
         for (int slice_x = 0; slice_x < s->num_x; slice_x++) {
             SliceArgs *args = &s->slice_args[s->num_x*slice_y + slice_x];
@@ -509,22 +524,33 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
             args->x   = slice_x;
             args->y   = slice_y;
             if (args->bytes != sl_args->bytes || args->quant_idx != sl_args->quant_idx) {
+                //fflush(stdout);
                 //printf("BAD\n");
             }
             args->bytes = sl_args->bytes;
             args->quant_idx = sl_args->quant_idx;
             sl_args++;
+            slice_index++;
         }
     }
 
-    //uint8_t* buf = put_bits_ptr(&s->pb);
     uint8_t* buf = malloc(1280 * 720 * 3 * sizeof(dwtcoef));
     int skip = 0;
     for (int slice_y = 0; slice_y < s->num_y; slice_y++) {
         for (int slice_x = 0; slice_x < s->num_x; slice_x++) {
             SliceArgs *args = &s->slice_args[s->num_x*slice_y + slice_x];
             init_put_bits(&args->pb, buf + skip, args->bytes+s->prefix_bytes);
-            //encode_hq_slice(s->avctx, args);
+            encode_hq_slice(s->avctx, args);
+            if (memcmp(buf + skip, vk_buf + skip, args->bytes) != 0) {
+                for (int i = 0; i < args->bytes; i++) {
+                    printf("buf 0x%x vk_buf 0x%x (%d)\n", *(buf + skip + i), *(vk_buf + skip + i), i);
+                    if (*(buf + skip + i) != *(vk_buf + skip + i)) {
+                        printf("Mismatch\n");
+                    }
+                }
+                fflush(stdout);
+                printf("BAD\n");
+            }
             skip += args->bytes;
         }
     }

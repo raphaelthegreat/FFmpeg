@@ -141,6 +141,9 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
                       sizeof(TransformArgs));
 
     dwtcoef* coef_buf = s->plane[0].coef_buf;
+    FILE* file = fopen("plane0.bin", "w");
+    fwrite(coef_buf, 4, s->plane[0].coef_stride * s->plane[0].dwt_height, file);
+    fclose(file);
     dwtcoef coef = *coef_buf;
 
     /* Calculate per-slice quantizers and sizes */

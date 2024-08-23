@@ -21,9 +21,6 @@
 
 #include "vc2enc_common.h"
 
-int ssx = 0;
-int ssy = 0;
-
 static av_always_inline void put_vc2_ue_uint(PutBitContext *pb, uint32_t val)
 {
     int i;
@@ -375,8 +372,6 @@ static void encode_subband(VC2EncContext *s, PutBitContext *pb, int sx, int sy,
                            SubBand *b, int quant)
 {
     int x, y;
-    ssx = sx;
-    ssy = sy;
 
     const int left   = b->width  * (sx+0) / s->num_x;
     const int right  = b->width  * (sx+1) / s->num_x;
@@ -386,18 +381,17 @@ static void encode_subband(VC2EncContext *s, PutBitContext *pb, int sx, int sy,
     dwtcoef *coeff = b->buf + top * b->stride;
     const uint64_t q_m = ((uint64_t)(s->qmagic_lut[quant][0])) << 2;
     const uint64_t q_a = s->qmagic_lut[quant][1];
-    const int q_s = av_log2(ff_dirac_qscale_tab[quant]) + 32;
+    //const int q_s = av_log2(ff_dirac_qscale_tab[quant]) + 32;
+    const int qfactor = ff_dirac_qscale_tab[quant];
 
     for (y = top; y < bottom; y++) {
         for (x = left; x < right; x++) {
             //uint32_t c_abs = QUANT(FFABS(coeff[x]), q_m, q_a, q_s);
             uint32_t c_abs = (FFABS(coeff[x]));
+            c_abs = (c_abs << 2) / qfactor;
             put_vc2_ue_uint(pb, c_abs);
             if (c_abs)
                 put_bits(pb, 1, coeff[x] < 0);
-            if (sx == 1 && sy == 20) {
-                //printf("put_bytes %d\n", put_bytes_count(pb, 0));
-            }
         }
         coeff += b->stride;
     }
@@ -430,9 +424,10 @@ static int count_hq_slice(SliceArgs *slice, int quant_idx)
                 SubBand *b = &s->plane[p].band[level][orientation];
 
                 const int q_idx = quants[level][orientation];
-                const uint64_t q_m = ((uint64_t)s->qmagic_lut[q_idx][0]) << 2;
-                const uint64_t q_a = s->qmagic_lut[q_idx][1];
-                const int q_s = av_log2(ff_dirac_qscale_tab[q_idx]) + 32;
+                //const uint64_t q_m = ((uint64_t)s->qmagic_lut[q_idx][0]) << 2;
+                //const uint64_t q_a = s->qmagic_lut[q_idx][1];
+                //const int q_s = av_log2(ff_dirac_qscale_tab[q_idx]) + 32;
+                const int qfactor = ff_dirac_qscale_tab[q_idx];
 
                 const int left   = b->width  * slice->x    / s->num_x;
                 const int right  = b->width  *(slice->x+1) / s->num_x;
@@ -445,6 +440,7 @@ static int count_hq_slice(SliceArgs *slice, int quant_idx)
                     for (x = left; x < right; x++) {
                         //uint32_t c_abs = QUANT(FFABS(buf[x]), q_m, q_a, q_s);
                         uint32_t c_abs = (FFABS(buf[x]));
+                        c_abs = (c_abs << 2) / qfactor;
                         bits += count_vc2_ue_uint(c_abs);
                         bits += !!c_abs;
                     }
@@ -522,7 +518,7 @@ int calc_slice_sizes(VC2EncContext *s)
     s->avctx->execute(s->avctx, rate_control, enc_args, NULL, s->num_x*s->num_y,
                       sizeof(SliceArgs));
 
-    for (i = 0; i < s->num_x*s->num_y; i++) {
+    /*for (i = 0; i < s->num_x*s->num_y; i++) {
         SliceArgs *args = &enc_args[i];
         bytes_left += args->bytes;
         for (j = 0; j < slice_redist_range; j++) {
@@ -560,7 +556,7 @@ int calc_slice_sizes(VC2EncContext *s)
         }
         if (!distributed)
             break;
-    }
+    }*/
 
     for (i = 0; i < s->num_x*s->num_y; i++) {
         SliceArgs *args = &enc_args[i];
@@ -596,10 +592,6 @@ int encode_hq_slice(AVCodecContext *avctx, void *arg)
         for (orientation = !!level; orientation < 4; orientation++)
             quants[level][orientation] = FFMAX(quant_idx - s->quant[level][orientation], 0);
 
-    if (slice_x == 1 && slice_y == 20) {
-        printf("break\n");
-    }
-
     /* Luma + 2 Chroma planes */
     for (p = 0; p < 3; p++) {
         int bytes_start, bytes_len, pad_s, pad_c;
@@ -612,13 +604,7 @@ int encode_hq_slice(AVCodecContext *avctx, void *arg)
                                quants[level][orientation]);
             }
         }
-        if (slice_x == 1 && slice_y == 20) {
-            //printf("pre put_bytes %d\n", put_bytes_output(pb));
-        }
         flush_put_bits(pb);
-        if (slice_x == 1 && slice_y == 20) {
-            //printf("post put_bytes %d\n", put_bytes_output(pb));
-        }
         bytes_len = put_bytes_output(pb) - bytes_start - 1;
         if (p == 2) {
             int len_diff = slice_bytes_max - put_bytes_output(pb);
@@ -628,8 +614,8 @@ int encode_hq_slice(AVCodecContext *avctx, void *arg)
             pad_s = FFALIGN(bytes_len, s->size_scaler)/s->size_scaler;
             pad_c = (pad_s*s->size_scaler) - bytes_len;
         }
-        if (slice_x == 1 && slice_y == 20) {
-            //printf("bytes_len %d\npad_s %d pad_c %d\n", bytes_len, pad_s, pad_c);
+        if (slice_dat->x == 0 && slice_dat->y == 0) {
+            printf("Cpu bytes_len %d pad_s %d pad_c %d\n", bytes_len, pad_s, pad_c);
         }
         pb->buf[bytes_start] = pad_s;
         /* vc2-reference uses that padding that decodes to '0' coeffs */
