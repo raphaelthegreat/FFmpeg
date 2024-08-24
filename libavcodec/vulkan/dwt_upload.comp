@@ -14,6 +14,7 @@ layout(scalar, buffer_reference, buffer_reference_align = 1) buffer PlaneBuf {
 
 struct Plane {
     ivec2 dim;
+    ivec2 dwt_dim;
     int coef_stride;
     int pad;
 };

@@ -16,6 +16,7 @@ const char *ff_source_dwt_upload_comp =
 "\n"
 "struct Plane {\n"
 "    ivec2 dim;\n"
+"    ivec2 dwt_dim;\n"
 "    int coef_stride;\n"
 "    int pad;\n"
 "};\n"

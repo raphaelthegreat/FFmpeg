@@ -22,6 +22,9 @@ layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
 layout(scalar, buffer_reference, buffer_reference_align = 1) buffer BitBuf {
     uint data[];
 };
+layout(scalar, buffer_reference, buffer_reference_align = 1) buffer BitBufByte {
+    uint8_t data[];
+};
 layout(scalar, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
     int quant[5][4];
     int ff_dirac_qscale_tab[116];
@@ -34,12 +37,10 @@ layout(push_constant, scalar) uniform ComputeInfo {
     SliceArgBuf slice;
     ivec2 num_slices;
     ivec2 slice_dim;
-    ivec2 plane0_dim;
+    ivec2 plane_dim[3];
     int wavelet_depth;
-    int quant_idx;
     int size_scaler;
     int prefix_bytes;
-    int num_frame;
 };
 
 #define BUF_BITS 32
@@ -176,11 +177,9 @@ void main() {
         /* Save current location and write a zero value */
         int write_ptr_start = write_ptr;
         int bit_left_start = bit_left;
-        int chroma_shift = (p == 0 ? 0 : 1);
-        ivec2 plane_dim = plane0_dim >> chroma_shift;
         put_bits(8, 0);
         for (int level = 0; level < wavelet_depth; level++) {
-            ivec2 band_size = plane_dim >> (wavelet_depth - level);
+            ivec2 band_size = plane_dim[p] >> (wavelet_depth - level);
             for (int o = int(level > 0); o < 4; o++) {
                 /* Encode subband */
                 int left = band_size.x * (slice_coord.x) / num_slices.x;
@@ -191,7 +190,7 @@ void main() {
                 const int q_idx = quants[level][o];
                 const int qfactor = luts.ff_dirac_qscale_tab[q_idx];
 
-                int stride = plane_dim.x;
+                int stride = plane_dim[p].x;
                 int band_ptr = int(o > 1) * band_size.y * stride + (o & 1) * band_size.x;
                 int start = band_ptr + top * stride;
                 for (int y = top; y < bottom; y++) {
@@ -218,10 +217,10 @@ void main() {
             pad_s = align(bytes_len, size_scaler)/size_scaler;
             pad_c = (pad_s*size_scaler) - bytes_len;
         }
-        if (gl_GlobalInvocationID.x == 0) {
-            debugPrintfEXT("Gpu write_ptr_start %d bit_left_start %d\\n", write_ptr_start, bit_left_start);
-        }
-        pb.data[write_ptr_start] |= (pad_s & 0xFF) << (BUF_BITS - bit_left_start);
+        BitBufByte pbb = BitBufByte(pb);
+        int start_ptr = (write_ptr_start << 2) + ((BUF_BITS - bit_left_start) >> 3);
+        pbb.data[start_ptr] = uint8_t(pad_s);
+        //pb.data[write_ptr_start] = value | (pad_s & 0xFF) << (BUF_BITS - bit_left_start);
         /* vc2-reference uses that padding that decodes to '0' coeffs */
         skip_put_bytes(pad_c);
     }

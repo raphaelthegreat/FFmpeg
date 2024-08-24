@@ -126,6 +126,8 @@ typedef struct TransformArgs {
 typedef struct VC2DwtPlane {
     int width;
     int height;
+    int dwt_width;
+    int dwt_height;
     int coef_stride;
     int pad;
 } VC2DwtPlane;
@@ -154,13 +156,13 @@ typedef struct VC2EncPushData {
     int num_y;
     int slice_x;
     int slice_y;
-    int plane_x;
-    int plane_y;
+    struct {
+        int dwt_width;
+        int dwt_height;
+    } planes[3];
     int wavelet_depth;
-    int quant_idx;
     int size_scaler;
     int prefix_bytes;
-    int num_frame;
 } VC2EncPushData;
 
 typedef struct VC2EncSliceArgs {
@@ -178,15 +180,15 @@ typedef struct VC2EncSliceCalcPushData {
     int num_y;
     int slice_dim_x;
     int slice_dim_y;
-    int plane_x;
-    int plane_y;
+    struct {
+        int dwt_width;
+        int dwt_height;
+    } planes[3];
     int wavelet_depth;
-    int quant_idx;
     int size_scaler;
     int prefix_bytes;
     int bits_ceil;
     int bits_floor;
-    int num_frame;
 } VC2EncSliceCalcPushData;
 
 typedef struct VC2EncContext {

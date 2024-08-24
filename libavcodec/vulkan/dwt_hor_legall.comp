@@ -9,6 +9,7 @@ layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
 
 struct Plane {
     ivec2 dim;
+    ivec2 dwt_dim;
     int coef_stride;
     int pad;
 };
@@ -30,7 +31,7 @@ layout(push_constant, scalar) uniform ComputeInfo {
 void main() {
     int coord_y = int(gl_GlobalInvocationID.x);
     uint plane_idx = gl_GlobalInvocationID.z;
-    ivec2 work_area = planes[plane_idx].dim >> level;
+    ivec2 work_area = planes[plane_idx].dwt_dim >> level;
     if (coord_y >= work_area.y) {
         return;
     }
