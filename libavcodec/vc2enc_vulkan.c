@@ -49,35 +49,17 @@ static RENDERDOC_API_1_6_0 *rdoc_api = NULL;
 
 static void init_vulkan_pipeline(VC2EncContext* s, FFVkSPIRVCompiler *spv,
                                  FFVulkanPipeline* comp_pl, int push_size,
-                                 const char* pl_name, const char* pl_source,
-                                 int plane_desc) {
+                                 const char* pl_name, const char* pl_source) {
     uint8_t *spv_data;
     size_t spv_len;
     void *spv_opaque = NULL;
     FFVulkanContext *vkctx = &s->vkctx;
     FFVkSPIRVShader* shd;
-    FFVulkanDescriptorSetBinding *desc;
     int err;
 
     ff_vk_shader_init(comp_pl, &s->shd, pl_name, VK_SHADER_STAGE_COMPUTE_BIT, 0);
     shd = &s->shd;
 
-    /* Build DWT descriptor set. */
-    if (plane_desc) {
-        desc = (FFVulkanDescriptorSetBinding[])
-        {
-            {
-                .name = "planes",
-                .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .mem_layout = "r8",
-                .mem_quali   = "readonly",
-                .dimensions = 2,
-                .elems = 3,
-                .stages = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-        };
-        RET(ff_vk_pipeline_descriptor_set_add(vkctx, comp_pl, shd, desc, 1, 1, 0));
-    }
     ff_vk_add_push_constant(comp_pl, 0, push_size, VK_SHADER_STAGE_COMPUTE_BIT);
     GLSLD(pl_source);
 
@@ -107,16 +89,6 @@ static void init_vulkan(AVCodecContext *avctx) {
     VC2EncAuxData* ad = NULL;
     Plane *p;
     int i, level, ret;
-
-    vkctx->frames_ref = av_buffer_ref(avctx->hw_frames_ctx);
-    vkctx->frames = (AVHWFramesContext *)vkctx->frames_ref->data;
-    vkctx->hwfc = vkctx->frames->hwctx;
-    vkctx->device = (AVHWDeviceContext *)vkctx->frames->device_ref->data;
-    vkctx->hwctx = vkctx->device->hwctx;
-    vkctx->extensions = ff_vk_extensions_to_mask(vkctx->hwctx->enabled_dev_extensions,
-                                                 vkctx->hwctx->nb_enabled_dev_extensions);
-    ff_vk_load_functions(vkctx->device, &vkctx->vkfn, vkctx->extensions, 1, 1);
-    ff_vk_load_props(vkctx);
 
     /* Initialize spirv compiler */
     spv = ff_vk_spirv_init();
@@ -225,24 +197,24 @@ static void init_vulkan(AVCodecContext *avctx) {
 
     /* Initialize encoding pipelines */
     init_vulkan_pipeline(s, spv, &s->dwt_upload_pl, sizeof(VC2DwtPushData),
-                         "dwt_upload_pl", ff_source_dwt_upload_comp, 0);
+                         "dwt_upload_pl", ff_source_dwt_upload_comp);
     init_vulkan_pipeline(s, spv, &s->dwt_de_pl, sizeof(VC2DwtPushData),
-                         "dwt_de_pl", ff_source_dwt_deinterleave_comp, 0);
+                         "dwt_de_pl", ff_source_dwt_deinterleave_comp);
     init_vulkan_pipeline(s, spv, &s->slice_pl, sizeof(VC2EncPushData),
-                         "slice_pl", ff_source_slice_sizes_comp, 0);
+                         "slice_pl", ff_source_slice_sizes_comp);
     init_vulkan_pipeline(s, spv, &s->enc_pl, sizeof(VC2EncPushData),
-                         "enc_pl", ff_source_encode_comp, 0);
+                         "enc_pl", ff_source_encode_comp);
 
     if (s->wavelet_idx == VC2_TRANSFORM_HAAR || s->wavelet_idx == VC2_TRANSFORM_HAAR_S) {
         init_vulkan_pipeline(s, spv, &s->dwt_hor_pl, sizeof(VC2DwtPushData),
-                             "dwt_hor_pl", ff_source_dwt_hor_comp, 0);
+                             "dwt_hor_pl", ff_source_dwt_hor_comp);
         init_vulkan_pipeline(s, spv, &s->dwt_ver_pl, sizeof(VC2DwtPushData),
-                             "dwt_ver_pl", ff_source_dwt_ver_comp, 0);
+                             "dwt_ver_pl", ff_source_dwt_ver_comp);
     } else if (s->wavelet_idx == VC2_TRANSFORM_5_3) {
         init_vulkan_pipeline(s, spv, &s->dwt_hor_pl, sizeof(VC2DwtPushData),
-                             "dwt_hor_pl", ff_source_dwt_hor_legall_comp, 0);
+                             "dwt_hor_pl", ff_source_dwt_hor_legall_comp);
         init_vulkan_pipeline(s, spv, &s->dwt_ver_pl, sizeof(VC2DwtPushData),
-                             "dwt_ver_pl", ff_source_dwt_ver_legall_comp, 0);
+                             "dwt_ver_pl", ff_source_dwt_ver_legall_comp);
     }
 
     s->group_x = s->plane[0].dwt_width >> 3;
@@ -497,6 +469,8 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
     ff_vk_exec_submit(vkctx, exec);
     ff_vk_exec_wait(vkctx, exec);
 
+    s->num_frame++;
+
     dwtcoef* coef_buf = (dwtcoef*)dst_plane_dat;
 
     FILE* file = fopen("plane0_vk.bin", "w");
@@ -514,7 +488,7 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
         coef_buf += s->buf_plane_size >> 2;
     }
 
-    //calc_slice_sizes(s);
+    calc_slice_sizes(s);
 
     VC2EncSliceArgs* sl_args = vk_slice_args;
     int slice_index = 0;
@@ -525,8 +499,8 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
             args->x   = slice_x;
             args->y   = slice_y;
             if (args->bytes != sl_args->bytes || args->quant_idx != sl_args->quant_idx) {
-                //fflush(stdout);
-                //printf("BAD\n");
+                fflush(stdout);
+                printf("BAD\n");
             }
             args->bytes = sl_args->bytes;
             args->quant_idx = sl_args->quant_idx;
@@ -541,37 +515,25 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
         for (int slice_x = 0; slice_x < s->num_x; slice_x++) {
             SliceArgs *args = &s->slice_args[s->num_x*slice_y + slice_x];
             init_put_bits(&args->pb, buf + skip, args->bytes+s->prefix_bytes);
-            /*encode_hq_slice(s->avctx, args);
+            encode_hq_slice(s->avctx, args);
             if (memcmp(buf + skip, vk_buf + skip, args->bytes) != 0) {
-                for (int i = 0; i < args->bytes; i++) {
+                /*for (int i = 0; i < args->bytes; i++) {
                     printf("buf 0x%x vk_buf 0x%x (%d)\n", *(buf + skip + i), *(vk_buf + skip + i), i);
                     if (*(buf + skip + i) != *(vk_buf + skip + i)) {
                         printf("Mismatch\n");
                     }
-                }
+                }*/
                 fflush(stdout);
                 printf("BAD\n");
-            }*/
+            }
             skip += args->bytes;
         }
     }
 
-    /*int ret = memcmp(vk_buf, buf, skip);
-    if (ret != 0) {
-        uint32_t* vk_b = (uint32_t*)vk_buf;
-        uint32_t* b = (uint32_t*)buf;
-        for (int i = 0; i < skip >> 2; i++) {
-            printf("vk 0x%x cpu 0x%x\n", vk_b[i], b[i]);
-        }
-        printf("bad\n");
-    }*/
     free(buf);
 
-    skip_put_bytes(&s->pb, skip);
-
     /* Skip forward to write end header */
-    //uint32_t num_skip_bytes = 1389 * (40 * 45);
-    //skip_put_bytes(&s->pb, num_skip_bytes);
+    skip_put_bytes(&s->pb, skip);
 }
 
 static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
@@ -729,6 +691,18 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
     const AVPixFmtDescriptor *fmt = av_pix_fmt_desc_get(avctx->pix_fmt);
     const int depth = fmt->comp[0].depth;
     VC2EncContext *s = avctx->priv_data;
+    FFVulkanContext *vkctx = &s->vkctx;
+    const AVPixFmtDescriptor *desc;
+
+    vkctx->frames_ref = av_buffer_ref(avctx->hw_frames_ctx);
+    vkctx->frames = (AVHWFramesContext *)vkctx->frames_ref->data;
+    vkctx->hwfc = vkctx->frames->hwctx;
+    vkctx->device = (AVHWDeviceContext *)vkctx->frames->device_ref->data;
+    vkctx->hwctx = vkctx->device->hwctx;
+    vkctx->extensions = ff_vk_extensions_to_mask(vkctx->hwctx->enabled_dev_extensions,
+                                                 vkctx->hwctx->nb_enabled_dev_extensions);
+    ff_vk_load_functions(vkctx->device, &vkctx->vkfn, vkctx->extensions, 1, 1);
+    ff_vk_load_props(vkctx);
 
     s->picture_number = 0;
 
@@ -800,12 +774,9 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
     }
 
     /* Chroma subsampling */
-    // TODO
-    ret = av_pix_fmt_get_chroma_sub_sample(avctx->pix_fmt, &s->chroma_x_shift, &s->chroma_y_shift);
+    ret = av_pix_fmt_get_chroma_sub_sample(vkctx->frames->sw_format, &s->chroma_x_shift, &s->chroma_y_shift);
     if (ret)
         return ret;
-    s->chroma_x_shift = 1;
-    s->chroma_y_shift = 1;
 
     /* Bit depth and color range index */
     if (depth == 8 && avctx->color_range == AVCOL_RANGE_JPEG) {
@@ -898,7 +869,7 @@ static const AVOption vc2enc_options[] = {
     {"slice_width",   "Slice width",  offsetof(VC2EncContext, slice_width), AV_OPT_TYPE_INT, {.i64 = 32}, 32, 1024, VC2ENC_FLAGS, .unit = "slice_width"},
     {"slice_height",  "Slice height", offsetof(VC2EncContext, slice_height), AV_OPT_TYPE_INT, {.i64 = 16}, 8, 1024, VC2ENC_FLAGS, .unit = "slice_height"},
     {"wavelet_depth", "Transform depth", offsetof(VC2EncContext, wavelet_depth), AV_OPT_TYPE_INT, {.i64 = 4}, 1, 5, VC2ENC_FLAGS, .unit = "wavelet_depth"},
-    {"wavelet_type",  "Transform type",  offsetof(VC2EncContext, wavelet_idx), AV_OPT_TYPE_INT, {.i64 = VC2_TRANSFORM_5_3}, 0, VC2_TRANSFORMS_NB, VC2ENC_FLAGS, .unit = "wavelet_idx"},
+    {"wavelet_type",  "Transform type",  offsetof(VC2EncContext, wavelet_idx), AV_OPT_TYPE_INT, {.i64 = VC2_TRANSFORM_HAAR}, 0, VC2_TRANSFORMS_NB, VC2ENC_FLAGS, .unit = "wavelet_idx"},
         {"9_7",          "Deslauriers-Dubuc (9,7)", 0, AV_OPT_TYPE_CONST, {.i64 = VC2_TRANSFORM_9_7},    INT_MIN, INT_MAX, VC2ENC_FLAGS, .unit = "wavelet_idx"},
         {"5_3",          "LeGall (5,3)",            0, AV_OPT_TYPE_CONST, {.i64 = VC2_TRANSFORM_5_3},    INT_MIN, INT_MAX, VC2ENC_FLAGS, .unit = "wavelet_idx"},
         {"haar",         "Haar (with shift)",       0, AV_OPT_TYPE_CONST, {.i64 = VC2_TRANSFORM_HAAR_S}, INT_MIN, INT_MAX, VC2ENC_FLAGS, .unit = "wavelet_idx"},

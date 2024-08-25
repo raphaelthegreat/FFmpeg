@@ -192,7 +192,7 @@ const char *ff_source_encode_comp =
 "                const int q_idx = quants[level][o];\n"
 "                const int qfactor = luts.ff_dirac_qscale_tab[q_idx];\n"
 "\n"
-"                int stride = plane_dim[p].x;\n"
+"                int stride = align(plane_dim[p].x, 32);\n"
 "                int band_ptr = int(o > 1) * band_size.y * stride + (o & 1) * band_size.x;\n"
 "                int start = band_ptr + top * stride;\n"
 "                for (int y = top; y < bottom; y++) {\n"

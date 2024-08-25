@@ -94,7 +94,7 @@ int count_hq_slice(int quant_index) {
                 const int q_idx = quants[level][o];
                 const int qfactor = luts.ff_dirac_qscale_tab[q_idx];
 
-                const int stride = plane_dim[p].x;
+                const int stride = ffalign(plane_dim[p].x, 32);
                 const int band_ptr = int(o > 1) * band_dim.y * stride + (o & 1) * band_dim.x;
                 int start = band_ptr + top * stride;
                 for (int y = top; y < bottom; y++) {
@@ -114,9 +114,6 @@ int count_hq_slice(int quant_index) {
         int pad_s = ffalign(bytes_len, size_scaler) / size_scaler;
         int pad_c = (pad_s * size_scaler) - bytes_len;
         bits += pad_c * 8;
-        if (slice_index == 1064) {
-            debugPrintfEXT("Gpu End bits %d\\n", bits);
-        }
     }
 
     cache[quant_index] = bits;

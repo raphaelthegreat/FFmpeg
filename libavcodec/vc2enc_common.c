@@ -614,17 +614,11 @@ int encode_hq_slice(AVCodecContext *avctx, void *arg)
             pad_s = FFALIGN(bytes_len, s->size_scaler)/s->size_scaler;
             pad_c = (pad_s*s->size_scaler) - bytes_len;
         }
-        if (slice_dat->x == 0 && slice_dat->y == 0) {
-            printf("Cpu bytes_len %d pad_s %d pad_c %d\n", bytes_len, pad_s, pad_c);
-        }
         pb->buf[bytes_start] = pad_s;
         /* vc2-reference uses that padding that decodes to '0' coeffs */
         memset(put_bits_ptr(pb), 0xFF, pad_c);
         skip_put_bytes(pb, pad_c);
     }
-    uint8_t* end_ptr = put_bits_ptr(pb);
-    int written = end_ptr - start_ptr;
-    //printf("(%d, %d) written %d slice_bytes_max %d\n", slice_x, slice_y, written, slice_bytes_max);
     return 0;
 }
 

@@ -190,7 +190,7 @@ void main() {
                 const int q_idx = quants[level][o];
                 const int qfactor = luts.ff_dirac_qscale_tab[q_idx];
 
-                int stride = plane_dim[p].x;
+                int stride = align(plane_dim[p].x, 32);
                 int band_ptr = int(o > 1) * band_size.y * stride + (o & 1) * band_size.x;
                 int start = band_ptr + top * stride;
                 for (int y = top; y < bottom; y++) {

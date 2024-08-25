@@ -146,10 +146,6 @@ static void vc2_subband_dwt_53(VC2TransformContext *t, dwtcoef *data,
     const ptrdiff_t synth_width  = width  << 1;
     const ptrdiff_t synth_height = height << 1;
 
-    FILE* file = fopen("plane0.bin", "w");
-    fwrite(datal, 4, stride * synth_height, file);
-    fclose(file);
-
     /*
      * Shift in one bit that is used for additional precision and copy
      * the data to the buffer.
@@ -160,10 +156,6 @@ static void vc2_subband_dwt_53(VC2TransformContext *t, dwtcoef *data,
         synthl += synth_width;
         datal  += stride;
     }
-
-    file = fopen("plane0.bin", "w");
-    fwrite(synth, 4, stride * synth_height, file);
-    fclose(file);
 
     /* Horizontal synthesis. */
     synthl = synth;
@@ -183,10 +175,6 @@ static void vc2_subband_dwt_53(VC2TransformContext *t, dwtcoef *data,
 
         synthl += synth_width;
     }
-
-    file = fopen("plane0.bin", "w");
-    fwrite(synth, 4, stride * synth_height, file);
-    fclose(file);
 
     /* Vertical synthesis: Lifting stage 2. */
     synthl = synth + synth_width;
@@ -220,15 +208,7 @@ static void vc2_subband_dwt_53(VC2TransformContext *t, dwtcoef *data,
     for (x = 0; x < synth_width; x++)
         synthl[x] += (synthl[x - synth_width] + synthl[x + synth_width] + 2) >> 2;
 
-    file = fopen("plane0.bin", "w");
-    fwrite(synth, 4, stride * synth_height, file);
-    fclose(file);
-
     deinterleave(data, stride, width, height, synth);
-
-    file = fopen("plane0.bin", "w");
-    fwrite(data, 4, stride * synth_height, file);
-    fclose(file);
 }
 
 static av_always_inline void dwt_haar(VC2TransformContext *t, dwtcoef *data,
