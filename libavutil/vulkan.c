@@ -1466,16 +1466,15 @@ static void destroy_imageviews(void *opaque, uint8_t *data)
     av_free(iv);
 }
 
-int ff_vk_create_imageviews(FFVulkanContext *s, FFVkExecContext *e,
-                            VkImageView views[AV_NUM_DATA_POINTERS],
-                            AVFrame *f)
+int ff_vk_create_imageviews_with_format(FFVulkanContext *s, FFVkExecContext *e,
+                                        VkImageView views[AV_NUM_DATA_POINTERS],
+                                        AVFrame *f, const VkFormat *rep_fmts)
 {
     int err;
     VkResult ret;
     AVBufferRef *buf;
     FFVulkanFunctions *vk = &s->vkfn;
     AVHWFramesContext *hwfc = (AVHWFramesContext *)f->hw_frames_ctx->data;
-    const VkFormat *rep_fmts = av_vkfmt_from_pixfmt(hwfc->sw_format);
     AVVkFrame *vkf = (AVVkFrame *)f->data[0];
     const int nb_images = ff_vk_count_images(vkf);
     const int nb_planes = av_pix_fmt_count_planes(hwfc->sw_format);
@@ -2038,7 +2037,7 @@ print:
 
         if (prop->mem_quali && desc[i].mem_quali)
             GLSLA(" %s", desc[i].mem_quali);
-
+        
         if (prop->type) {
             GLSLA(" ");
             if (desc[i].type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {

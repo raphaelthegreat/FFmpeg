@@ -1,0 +1,55 @@
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_buffer_reference : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
+    int coef_buf[];
+};
+
+struct Plane {
+    ivec2 dim;
+    ivec2 dwt_dim;
+};
+
+layout(push_constant, scalar) uniform ComputeInfo {
+    int s;
+    int diff_offset;
+    int level;
+    Plane planes[3];
+    DwtCoef pbuf[3];
+};
+
+int align(int x, int a) {
+    return (x + a - 1) & ~(a - 1);
+}
+
+void main() {
+    int coord_x = int(gl_GlobalInvocationID.x);
+    uint plane_idx = gl_GlobalInvocationID.z;
+    ivec2 work_area = planes[plane_idx].dwt_dim;
+    int dist = 1 << level;
+    if (coord_x >= work_area.x || (coord_x & (dist - 1)) != 0) {
+        return;
+    }
+
+    DwtCoef buf = pbuf[plane_idx];
+    ivec2 dwt_area = work_area >> 1;
+    int stride = align(planes[plane_idx].dwt_dim.x, 32);
+
+    // Lifting stage 2
+    for (int y = dist; y < work_area.y - 2 * dist; y += 2 * dist) {
+        buf.coef_buf[stride * y + coord_x] -= (buf.coef_buf[stride * (y - dist) + coord_x] +
+                                               buf.coef_buf[stride * (y + dist) + coord_x] + 1) >> 1;
+    }
+    buf.coef_buf[stride * (work_area.y - dist) + coord_x] -= (2 * buf.coef_buf[stride * (work_area.y - 2 * dist) + coord_x] + 1) >> 1;
+
+    // Lifting stage 1
+    buf.coef_buf[coord_x] += (2 * buf.coef_buf[stride * dist + coord_x] + 2) >> 2;
+    for (int y = 2 * dist; y < work_area.y - 2 * dist; y += 2 * dist) {
+        buf.coef_buf[stride * y + coord_x] += (buf.coef_buf[stride * (y + dist) + coord_x] +
+                                               buf.coef_buf[stride * (y - dist) + coord_x] + 2) >> 2;
+    }
+    buf.coef_buf[stride * (work_area.y - 2 * dist) + coord_x] += (buf.coef_buf[stride * (work_area.y - 3 * dist) + coord_x] +
+                                                                  buf.coef_buf[stride * (work_area.y - dist) + coord_x] + 2) >> 2;
+}
