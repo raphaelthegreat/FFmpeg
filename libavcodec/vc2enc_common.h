@@ -202,6 +202,7 @@ typedef struct VC2EncContext {
     DiracVersionInfo ver;
 
     SliceArgs *slice_args;
+    VC2EncSliceArgs* vk_slice_args;
     TransformArgs transform_args[3];
 
     /* For conversion from unsigned pixel values to signed */
