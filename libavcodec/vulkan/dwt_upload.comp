@@ -1,0 +1,48 @@
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_debug_printf : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
+    int coef_buf[];
+};
+
+layout(scalar, buffer_reference, buffer_reference_align = 1) buffer PlaneBuf {
+    uint8_t data[];
+};
+
+struct Plane {
+    ivec2 dim;
+    ivec2 dwt_dim;
+    int coef_stride;
+    int pad;
+};
+
+#define VC2_TRANSFORM_HAAR (3)
+#define VC2_TRANSFORM_HAAR_S (4)
+#define VC2_TRANSFORM_5_3 (1)
+
+layout(push_constant, scalar) uniform ComputeInfo {
+    int s;
+    int diff_offset;
+    int level;
+    int wavelet_type;
+    Plane planes[3];
+    PlaneBuf src_buf[3];
+    DwtCoef dst_buf[3];
+};
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    uint plane_idx = gl_GlobalInvocationID.z;
+    ivec2 work_area = planes[plane_idx].dim;
+    if (any(greaterThanEqual(coord, work_area))) {
+        return;
+    }
+    int stride = planes[plane_idx].coef_stride;
+    uint coef_idx = coord.y * stride + coord.x;
+    uint8_t texel = src_buf[plane_idx].data[coef_idx];
+    int result = int(texel - diff_offset);
+    dst_buf[plane_idx].coef_buf[coef_idx] = result;
+}
