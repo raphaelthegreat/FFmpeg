@@ -1,0 +1,74 @@
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_debug_printf : require
+
+#define TILE_DIM 16
+#define LOCAL_X 256
+
+layout(local_size_x = TILE_DIM, local_size_y = TILE_DIM, local_size_z = 1) in;
+
+layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
+    int coef_buf[];
+};
+
+struct Plane {
+    ivec2 dim;
+    ivec2 dwt_dim;
+};
+
+layout(push_constant, scalar) uniform ComputeInfo {
+    int s;
+    int plane_idx;
+    int wavelet_depth;
+    Plane planes[3];
+    DwtCoef dst_buf[3];
+    DwtCoef src_buf[3];
+};
+
+int align(int x, int a) {
+    return (x + a - 1) & ~(a - 1);
+}
+
+shared uint local_coef[LOCAL_X];
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 work_area = planes[plane_idx].dwt_dim;
+    ivec2 dwt_area = work_area >> 1;
+    if (any(greaterThanEqual(coord, work_area))) {
+        return;
+    }
+
+    DwtCoef src = src_buf[plane_idx];
+    DwtCoef dst = dst_buf[plane_idx];
+    int stride = align(planes[plane_idx].dwt_dim.x, 32);
+    int start = stride * coord.y;
+    
+    for (int i = 0; i < wavelet_depth; i++) {
+        ivec2 mask = ivec2((1 << i) - 1);
+        if (any(notEqual(coord & mask, ivec2(0)))) {
+            break;
+        }
+        
+        mask <<= 1;
+        mask |= 1;
+
+        // Shift in one bit that is used for additional precision
+        for (int x = 0; x < work_area.x; x++) {
+            dst.coef_buf[start + x] = src.coef_buf[start + x] << 1;
+        }
+
+        // Lifting stage 2
+        for (int x = 0; x < dwt_area.x - 1; x++) {
+            dst.coef_buf[start + 2 * x + 1] -= (dst.coef_buf[start + 2 * x] +
+                                                dst.coef_buf[start + 2 * x + 2] + 1) >> 1;
+        }
+        dst.coef_buf[start + work_area.x - 1] -= (2 * dst.coef_buf[start + work_area.x - 2] + 1) >> 1;
+
+        // Lifting stage 1
+        dst.coef_buf[start] += (2 * dst.coef_buf[start + 1] + 2) >> 2;
+        for (int x = 1; x <= dwt_area.x - 1; x++) {
+            dst.coef_buf[start + 2 * x] += (dst.coef_buf[start + 2 * x - 1] +
+                                            dst.coef_buf[start + 2 * x + 1] + 2) >> 2;
+        }
+    }
+}
