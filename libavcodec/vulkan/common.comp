@@ -18,6 +18,9 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference2 : require
+
 layout(buffer_reference, buffer_reference_align = 1) buffer u8buf {
     uint8_t v;
 };
@@ -173,8 +176,8 @@ uint64_t put_bits_count(in PutBitContext pb)
     return (pb.buf - pb.buf_start)*8 + BUF_BITS - pb.bit_left;
 }
 
-uint32_t put_bytes_count(in PutBitContext pb)
+int32_t put_bytes_count(in PutBitContext pb)
 {
     uint64_t num_bytes = (pb.buf - pb.buf_start) + ((BUF_BITS - pb.bit_left) >> 3);
-    return uint32_t(num_bytes);
+    return int32_t(num_bytes);
 }

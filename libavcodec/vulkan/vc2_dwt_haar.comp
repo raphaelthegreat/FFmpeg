@@ -1,0 +1,76 @@
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_buffer_reference : require
+
+#define LOCAL_X 256
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
+    int coef_buf[];
+};
+
+struct Plane {
+    ivec2 dim;
+    ivec2 dwt_dim;
+};
+
+layout(push_constant, scalar) uniform ComputeInfo {
+    int s;
+    int plane_idx;
+    int wavelet_depth;
+    Plane planes[3];
+    DwtCoef pbuf[3];
+};
+
+shared int local_coef[LOCAL_X];
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dwt_dim = planes[plane_idx].dwt_dim;
+    if (any(greaterThanEqual(coord, dwt_dim))) {
+        return;
+    }
+    int index = dwt_dim.x * coord.y + coord.x;
+    int value = pbuf[plane_idx].coef_buf[index];
+
+    /* Perform Haar wavelet on the 16x16 local workgroup with shared memory */
+    for (int i = 0; i < wavelet_depth; i++) {
+        ivec2 mask = ivec2((1 << i) - 1);
+        if (any(notEqual(coord & mask, ivec2(0)))) {
+            break;
+        }
+        
+        /* Offset between valid hor pixels for each level, +1, +2, +4 etc */
+        int dist = (1 << i);
+        
+        local_coef[gl_LocalInvocationIndex] = value;
+        barrier();
+
+        /* Horizontal haar wavelet */
+        uint other_id = gl_LocalInvocationIndex ^ dist;
+        int other = local_coef[other_id];
+        int a = gl_LocalInvocationIndex < other_id ? value : other;
+        int b = gl_LocalInvocationIndex < other_id ? other : value;
+        int dst_b = (b - a) * (1 << s);
+        int dst_a = a * (1 << s) + ((dst_b + 1) >> 1);
+        value = gl_LocalInvocationIndex < other_id ? dst_a : dst_b;
+
+        /* Offset between valid ver pixels for each level, +1, +2, +4 etc */
+        dist <<= 4;
+
+        local_coef[gl_LocalInvocationIndex] = value;
+        barrier();
+
+        /* Vertical haar wavelet */
+        other_id = gl_LocalInvocationIndex ^ dist;
+        other = local_coef[other_id];
+        a = gl_LocalInvocationIndex < other_id ? value : other;
+        b = gl_LocalInvocationIndex < other_id ? other : value;
+        dst_b = b - a;
+        dst_a = a + ((dst_b + 1) >> 1);
+        value = gl_LocalInvocationIndex < other_id ? dst_a : dst_b;
+    }
+
+    /* Store value */
+    pbuf[plane_idx].coef_buf[index] = value;
+}
