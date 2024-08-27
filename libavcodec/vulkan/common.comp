@@ -18,6 +18,9 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference2 : require
+
 layout(buffer_reference, buffer_reference_align = 1) buffer u8buf {
     uint8_t v;
 };
@@ -53,22 +56,19 @@ layout(buffer_reference, buffer_reference_align = 8) buffer u64buf {
 #define mid_pred(a, b, c) \
     max(min((a), (b)), min(max((a), (b)), (c)))
 
-/* TODO: optimize */
 uint align(uint src, uint a)
 {
-    uint res = src % a;
-    if (res == 0)
-        return src;
-    return src + a - res;
+    return (src + a - 1) & ~(a - 1);
 }
 
-/* TODO: optimize */
+int align(int src, int a)
+{
+    return (src + a - 1) & ~(a - 1);
+}
+
 uint64_t align64(uint64_t src, uint64_t a)
 {
-    uint64_t res = src % a;
-    if (res == 0)
-        return src;
-    return src + a - res;
+    return (src + a - 1) & ~(a - 1);
 }
 
 #define reverse4(src) \
@@ -159,6 +159,39 @@ uint32_t flush_put_bits(inout PutBitContext pb)
     return uint32_t(pb.buf - pb.buf_start);
 }
 
+void skip_put_bytes(inout PutBitContext pb, int n)
+{
+    int bytes_left = pb.bit_left >> 3;
+    if (n < bytes_left)
+    {
+        int n_bits = n << 3;
+        int mask = (1 << n_bits) - 1;
+        pb.bit_buf <<= n_bits;
+        pb.bit_buf |= mask;
+        pb.bit_left -= uint8_t(n_bits);
+        return;
+    }
+    if (pb.bit_left < BUF_BITS)
+    {
+        int mask = (1 << pb.bit_left) - 1;
+        pb.bit_buf <<= pb.bit_left;
+        pb.bit_buf |= mask;
+        u32vec2buf(pb.buf).v = BUF_REVERSE(pb.bit_buf);
+        pb.buf += BUF_BYTES;
+        n -= pb.bit_left >> 3;
+    }
+    int skip_dwords = n >> 2;
+    while (skip_dwords > 0)
+    {
+        u32buf(pb.buf).v = 0xFFFFFFFF;
+        pb.buf += 4;
+        skip_dwords--;
+    }
+    int skip_bits = (n & 3) << 3;
+    pb.bit_buf = (1 << skip_bits) - 1;
+    pb.bit_left = uint8_t(BUF_BITS - skip_bits);
+}
+
 void init_put_bits(out PutBitContext pb, u8buf data, uint64_t len)
 {
     pb.buf_start = uint64_t(data);
@@ -173,8 +206,8 @@ uint64_t put_bits_count(in PutBitContext pb)
     return (pb.buf - pb.buf_start)*8 + BUF_BITS - pb.bit_left;
 }
 
-uint32_t put_bytes_count(in PutBitContext pb)
+int32_t put_bytes_count(in PutBitContext pb)
 {
     uint64_t num_bytes = (pb.buf - pb.buf_start) + ((BUF_BITS - pb.bit_left) >> 3);
-    return uint32_t(num_bytes);
+    return int32_t(num_bytes);
 }
