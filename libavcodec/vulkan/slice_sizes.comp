@@ -15,6 +15,13 @@ struct SliceArgs {
     int pad;
 };
 
+struct Plane {
+    ivec2 dim;
+    ivec2 dwt_dim;
+    int coef_stride;
+    int pad;
+};
+
 layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
     int coef_buf[];
 };
@@ -29,12 +36,12 @@ layout(scalar, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
 };
 
 layout(push_constant, scalar) uniform ComputeInfo {
-    DwtCoef planes[4];
+    DwtCoef plane_dat[4];
     QuantLuts luts;
     SliceArgBuf slice;
     ivec2 num_slices;
     ivec2 slice_dim;
-    ivec2 plane_dim[3];
+    Plane planes[3];
     int wavelet_depth;
     int size_scaler;
     int prefix_bytes;
@@ -84,7 +91,8 @@ int count_hq_slice(int quant_index) {
         int bytes_start = bits >> 3;
         bits += 8;
         for (int level = 0; level < wavelet_depth; level++) {
-            ivec2 band_dim = plane_dim[p] >> (wavelet_depth - level);
+            ivec2 offset = (planes[p].dwt_dim - planes[p].dim) >> (1 + wavelet_depth - level);
+            ivec2 band_dim = planes[p].dwt_dim >> (wavelet_depth - level);
             for (int o = int(level > 0); o < 4; o++) {
                 const int left = band_dim.x * slice_coord.x / num_slices.x;
                 const int right = band_dim.x * (slice_coord.x+1) / num_slices.x;
@@ -94,12 +102,12 @@ int count_hq_slice(int quant_index) {
                 const int q_idx = quants[level][o];
                 const int qfactor = luts.ff_dirac_qscale_tab[q_idx];
 
-                const int stride = ffalign(plane_dim[p].x, 32);
+                const int stride = ffalign(planes[p].dwt_dim.x, 32);
                 const int band_ptr = int(o > 1) * band_dim.y * stride + (o & 1) * band_dim.x;
-                int start = band_ptr + top * stride;
+                int start = (offset.y * stride + offset.x) + band_ptr + top * stride;
                 for (int y = top; y < bottom; y++) {
                     for (int x = left; x < right; x++) {
-                        int coef = planes[p].coef_buf[start + x];
+                        int coef = plane_dat[p].coef_buf[start + x];
                         uint c_abs = uint(abs(coef));
                         c_abs = (c_abs << 2) / qfactor;
                         bits += count_vc2_ue_uint(c_abs);

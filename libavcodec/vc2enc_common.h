@@ -159,10 +159,7 @@ typedef struct VC2EncPushData {
     int num_y;
     int slice_x;
     int slice_y;
-    struct {
-        int dwt_width;
-        int dwt_height;
-    } planes[3];
+    VC2DwtPlane planes[3];
     int wavelet_depth;
     int size_scaler;
     int prefix_bytes;
@@ -183,10 +180,7 @@ typedef struct VC2EncSliceCalcPushData {
     int num_y;
     int slice_dim_x;
     int slice_dim_y;
-    struct {
-        int dwt_width;
-        int dwt_height;
-    } planes[3];
+    VC2DwtPlane planes[3];
     int wavelet_depth;
     int size_scaler;
     int prefix_bytes;
@@ -268,6 +262,7 @@ typedef struct VC2EncContext {
     FFVkSPIRVShader enc_shd;
     AVBufferPool* dwt_buf_pool;
 
+    VkSampler sampler;
     VkBuffer src_buf, dst_buf;
     VkBuffer slice_buf;
     uint32_t buf_plane_size;

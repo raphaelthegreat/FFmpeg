@@ -19,10 +19,6 @@ struct Plane {
     int pad;
 };
 
-#define VC2_TRANSFORM_HAAR (3)
-#define VC2_TRANSFORM_HAAR_S (4)
-#define VC2_TRANSFORM_5_3 (1)
-
 layout(push_constant, scalar) uniform ComputeInfo {
     int s;
     int diff_offset;
@@ -33,16 +29,28 @@ layout(push_constant, scalar) uniform ComputeInfo {
     DwtCoef dst_buf[3];
 };
 
+uint fetch_texel(uint plane_idx, vec2 coord) {
+    switch (plane_idx) {
+    case 0:
+        return uint(texture(plane0, vec2(coord)).x * 255);
+    case 1:
+        return uint(texture(plane1, vec2(coord)).x * 255);
+    case 2:
+        return uint(texture(plane2, vec2(coord)).x * 255);
+    }
+}
+
 void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
     uint plane_idx = gl_GlobalInvocationID.z;
-    ivec2 work_area = planes[plane_idx].dim;
+    ivec2 work_area = planes[plane_idx].dwt_dim;
     if (any(greaterThanEqual(coord, work_area))) {
         return;
     }
+    ivec2 pad = (work_area - planes[plane_idx].dim) >> 1;
     int stride = planes[plane_idx].coef_stride;
     uint coef_idx = coord.y * stride + coord.x;
-    uint8_t texel = src_buf[plane_idx].data[coef_idx];
+    uint texel = fetch_texel(plane_idx, coord - pad);
     int result = int(texel - diff_offset);
     dst_buf[plane_idx].coef_buf[coef_idx] = result;
 }
