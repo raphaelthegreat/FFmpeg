@@ -446,9 +446,17 @@ void ff_vk_exec_discard_deps(FFVulkanContext *s, FFVkExecContext *e);
 /**
  * Create an imageview and add it as a dependency to an execution.
  */
-int ff_vk_create_imageviews(FFVulkanContext *s, FFVkExecContext *e,
-                            VkImageView views[AV_NUM_DATA_POINTERS],
-                            AVFrame *f);
+int ff_vk_create_imageviews_with_format(FFVulkanContext *s, FFVkExecContext *e,
+                                        VkImageView views[AV_NUM_DATA_POINTERS],
+                                        AVFrame *f, const VkFormat *rep_fmts);
+static inline int ff_vk_create_imageviews(FFVulkanContext *s, FFVkExecContext *e,
+                                          VkImageView views[AV_NUM_DATA_POINTERS],
+                                          AVFrame *f)
+{
+    AVHWFramesContext *hwfc = (AVHWFramesContext *)f->hw_frames_ctx->data;
+    const VkFormat *rep_fmts = av_vkfmt_from_pixfmt(hwfc->sw_format);
+    return ff_vk_create_imageviews_with_format(s, e, views, f, rep_fmts);
+}
 
 void ff_vk_frame_barrier(FFVulkanContext *s, FFVkExecContext *e,
                          AVFrame *pic, VkImageMemoryBarrier2 *bar, int *nb_bar,

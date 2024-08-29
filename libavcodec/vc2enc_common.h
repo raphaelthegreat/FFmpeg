@@ -262,7 +262,6 @@ typedef struct VC2EncContext {
     FFVkSPIRVShader enc_shd;
     AVBufferPool* dwt_buf_pool;
 
-    VkSampler sampler;
     VkBuffer src_buf, dst_buf;
     VkBuffer slice_buf;
     uint32_t buf_plane_size;
