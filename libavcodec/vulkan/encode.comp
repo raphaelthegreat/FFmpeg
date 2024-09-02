@@ -187,7 +187,6 @@ void main() {
         int bit_left_start = bit_left;
         put_bits(8, 0);
         for (int level = 0; level < wavelet_depth; level++) {
-            ivec2 offset = (planes[p].dwt_dim - planes[p].dim) >> (1 + wavelet_depth - level);
             ivec2 band_size = planes[p].dwt_dim >> (wavelet_depth - level);
             for (int o = int(level > 0); o < 4; o++) {
                 /* Encode subband */
@@ -201,7 +200,7 @@ void main() {
 
                 int stride = align(planes[p].dwt_dim.x, 32);
                 int band_ptr = int(o > 1) * band_size.y * stride + (o & 1) * band_size.x;
-                int start = (offset.y * stride + offset.x) + band_ptr + top * stride;
+                int start = band_ptr + top * stride;
                 for (int y = top; y < bottom; y++) {
                     for (int x = left; x < right; x++) {
                         int coef = plane_dat[p].coef_buf[start + x];

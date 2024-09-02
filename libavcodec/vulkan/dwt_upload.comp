@@ -39,7 +39,7 @@ void main() {
     ivec2 pad = (work_area - planes[plane_idx].dim) >> 1;
     int stride = planes[plane_idx].coef_stride;
     uint coef_idx = coord.y * stride + coord.x;
-    ivec2 coord_i = clamp(coord - pad, ivec2(0), planes[plane_idx].dim);
+    ivec2 coord_i = clamp(coord, ivec2(0), planes[plane_idx].dim);
     uint texel = imageLoad(plane_imgs[plane_idx], coord_i).x;
     int result = int(texel - diff_offset);
     dst_buf[plane_idx].coef_buf[coef_idx] = result;
