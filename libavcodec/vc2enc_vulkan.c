@@ -158,7 +158,7 @@ static int init_vulkan(AVCodecContext *avctx)
 
     /* Initialize Haar push data */
     s->dwt_consts.diff_offset = s->diff_offset;
-    s->dwt_consts.s = 0;
+    s->dwt_consts.s = s->wavelet_idx == VC2_TRANSFORM_HAAR_S ? 1 : 0;
     s->dwt_consts.level = 0;
     s->dwt_consts.wavelet_type = s->wavelet_idx;
 
