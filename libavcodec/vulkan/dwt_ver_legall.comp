@@ -19,7 +19,7 @@ layout(push_constant, scalar) uniform ComputeInfo {
     int s;
     int diff_offset;
     int level;
-    int wavelet_type;
+    int bpp;
     Plane planes[3];
     DwtCoef dst_buf[3];
     DwtCoef src_buf[3];

@@ -158,9 +158,9 @@ static int init_vulkan(AVCodecContext *avctx)
 
     /* Initialize Haar push data */
     s->dwt_consts.diff_offset = s->diff_offset;
+    s->dwt_consts.bpp = s->bpp;
     s->dwt_consts.s = s->wavelet_idx == VC2_TRANSFORM_HAAR_S ? 1 : 0;
     s->dwt_consts.level = 0;
-    s->dwt_consts.wavelet_type = s->wavelet_idx;
 
     /* Initializer slice calc push data */
     s->calc_consts.num_x = s->num_x;
@@ -395,7 +395,7 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, const AVFrame *fr
     };
 
     for (int i = 0; i < AV_NUM_DATA_POINTERS; i++) {
-        rep_fmts[i] = VK_FORMAT_R8_UINT;
+        rep_fmts[i] = s->bpp == 2 ? VK_FORMAT_R16_UINT : VK_FORMAT_R8_UINT;
     }
     ff_vk_exec_add_dep_frame(vkctx, exec, (AVFrame*)frame,
                              VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -639,9 +639,8 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
 {
     Plane *p;
     SubBand *b;
-    int i, level, o, ret;
-    const AVPixFmtDescriptor *fmt = av_pix_fmt_desc_get(avctx->pix_fmt);
-    const int depth = fmt->comp[0].depth;
+    int i, level, o, ret, depth;
+    const AVPixFmtDescriptor *fmt;
     VC2EncContext *s = avctx->priv_data;
     FFVulkanContext *vkctx = &s->vkctx;
 
@@ -730,11 +729,13 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
         return ret;
 
     /* Bit depth and color range index */
+    fmt = av_pix_fmt_desc_get(vkctx->frames->sw_format);
+    depth = fmt->comp[0].depth;
     if (depth == 8 && avctx->color_range == AVCOL_RANGE_JPEG) {
         s->bpp = 1;
         s->bpp_idx = 1;
         s->diff_offset = 128;
-    } else if (1 || depth == 8 && (avctx->color_range == AVCOL_RANGE_MPEG ||
+    } else if (depth == 8 && (avctx->color_range == AVCOL_RANGE_MPEG ||
                avctx->color_range == AVCOL_RANGE_UNSPECIFIED)) {
         s->bpp = 1;
         s->bpp_idx = 2;
@@ -814,8 +815,8 @@ static const AVOption vc2enc_options[] = {
     {"tolerance",     "Max undershoot in percent", offsetof(VC2EncContext, tolerance), AV_OPT_TYPE_DOUBLE, {.dbl = 5.0f}, 0.0f, 45.0f, VC2ENC_FLAGS, .unit = "tolerance"},
     {"slice_width",   "Slice width",  offsetof(VC2EncContext, slice_width), AV_OPT_TYPE_INT, {.i64 = 32}, 32, 1024, VC2ENC_FLAGS, .unit = "slice_width"},
     {"slice_height",  "Slice height", offsetof(VC2EncContext, slice_height), AV_OPT_TYPE_INT, {.i64 = 16}, 8, 1024, VC2ENC_FLAGS, .unit = "slice_height"},
-    {"wavelet_depth", "Transform depth", offsetof(VC2EncContext, wavelet_depth), AV_OPT_TYPE_INT, {.i64 = 2}, 1, 5, VC2ENC_FLAGS, .unit = "wavelet_depth"},
-    {"wavelet_type",  "Transform type",  offsetof(VC2EncContext, wavelet_idx), AV_OPT_TYPE_INT, {.i64 = VC2_TRANSFORM_HAAR}, 0, VC2_TRANSFORMS_NB, VC2ENC_FLAGS, .unit = "wavelet_idx"},
+    {"wavelet_depth", "Transform depth", offsetof(VC2EncContext, wavelet_depth), AV_OPT_TYPE_INT, {.i64 = 4}, 1, 5, VC2ENC_FLAGS, .unit = "wavelet_depth"},
+    {"wavelet_type",  "Transform type",  offsetof(VC2EncContext, wavelet_idx), AV_OPT_TYPE_INT, {.i64 = VC2_TRANSFORM_HAAR_S}, 0, VC2_TRANSFORMS_NB, VC2ENC_FLAGS, .unit = "wavelet_idx"},
         {"9_7",          "Deslauriers-Dubuc (9,7)", 0, AV_OPT_TYPE_CONST, {.i64 = VC2_TRANSFORM_9_7},    INT_MIN, INT_MAX, VC2ENC_FLAGS, .unit = "wavelet_idx"},
         {"5_3",          "LeGall (5,3)",            0, AV_OPT_TYPE_CONST, {.i64 = VC2_TRANSFORM_5_3},    INT_MIN, INT_MAX, VC2ENC_FLAGS, .unit = "wavelet_idx"},
         {"haar",         "Haar (with shift)",       0, AV_OPT_TYPE_CONST, {.i64 = VC2_TRANSFORM_HAAR_S}, INT_MIN, INT_MAX, VC2ENC_FLAGS, .unit = "wavelet_idx"},
