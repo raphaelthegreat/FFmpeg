@@ -758,8 +758,8 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
         p->height     = avctx->height >> (i ? s->chroma_y_shift : 0);
         if (s->interlaced)
             p->height >>= 1;
-        p->dwt_width  = w = FFALIGN(p->width,  s->slice_width);
-        p->dwt_height = h = FFALIGN(p->height, s->slice_height);
+        p->dwt_width  = w = FFALIGN(p->width,  1 << s->wavelet_depth);
+        p->dwt_height = h = FFALIGN(p->height, 1 << s->wavelet_depth);
         p->coef_stride = FFALIGN(p->dwt_width, 32);
         for (level = s->wavelet_depth-1; level >= 0; level--) {
             w = w >> 1;
