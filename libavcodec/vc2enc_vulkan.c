@@ -36,7 +36,7 @@
 #include "hwconfig.h"
 
 #define LEGALL_WORKGROUP_X 64
-#define SLICE_WORKGROUP_X 1024
+#define SLICE_WORKGROUP_X 128
 
 extern const char *ff_source_encode_comp;
 extern const char *ff_source_dwt_hor_comp;
@@ -358,7 +358,7 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, const AVFrame *fr
     FFVulkanContext *vkctx = &s->vkctx;
     FFVulkanFunctions *vk = &vkctx->vkfn;
     AVVkFrame *vkf = (AVVkFrame *)frame->data[0];
-    uint32_t num_slice_groups = (s->num_x*s->num_y + SLICE_WORKGROUP_X - 1) >> 10;
+    uint32_t num_slice_groups = (s->num_x*s->num_y + SLICE_WORKGROUP_X - 1) >> 7;
     VkBufferMemoryBarrier2 buf_bar[2];
     int nb_buf_bar = 2;
     VkBufferMemoryBarrier2 copy_buf_bar;
@@ -466,7 +466,7 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, const AVFrame *fr
 
 static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
 {
-    uint32_t num_slice_groups = (s->num_x*s->num_y + SLICE_WORKGROUP_X - 1) >> 10;
+    uint32_t num_slice_groups = (s->num_x*s->num_y + SLICE_WORKGROUP_X - 1) >> 7;
     FFVulkanContext *vkctx = &s->vkctx;
     FFVulkanFunctions *vk = &vkctx->vkfn;
     int skip = 0;
