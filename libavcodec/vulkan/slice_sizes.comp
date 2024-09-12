@@ -71,6 +71,7 @@ int ffalign(int x, int a) {
 
 int cache[DIRAC_MAX_QUANT_INDEX];
 int quants[MAX_DWT_LEVELS][4];
+shared int slice_sizes[WORKGROUP_X];
 
 int count_hq_slice(int quant_index) {
     int bits = 0;
@@ -165,18 +166,12 @@ void main() {
     int bytes = ssize_round(bits >> 3);
     slice.args[slice_index].quant_idx = clamp(quant, 0, q_ceil-1);
     slice.args[slice_index].bytes = bytes;
-    slice.args[slice_index].pb_start = 0;
+    slice_sizes[gl_LocalInvocationIndex] = bytes;
     barrier();
     /* Prefix sum for all slices in current workgroup */
-    if (gl_LocalInvocationIndex == 0) {
-        for (int i = 1; i < WORKGROUP_X; i++) {
-            int index = slice_index + i;
-            if (index >= max_index) {
-                return;
-            }
-            int prev_sum = slice.args[index - 1].pb_start;
-            int prev_bytes = slice.args[index - 1].bytes;
-            slice.args[index].pb_start = prev_bytes + prev_sum;
-        }
+    int total_bytes = 0;
+    for (int i = 0; i < gl_LocalInvocationIndex; i++) {
+        total_bytes += slice_sizes[i];
     }
+    slice.args[slice_index].pb_start = total_bytes;
 }
