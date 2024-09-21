@@ -17,8 +17,6 @@ struct SliceArgs {
 struct Plane {
     ivec2 dim;
     ivec2 dwt_dim;
-    int coef_stride;
-    int pad;
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 16) buffer SliceArgBuf {
@@ -39,12 +37,11 @@ layout(scalar, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
 };
 
 layout(push_constant, scalar) uniform ComputeInfo {
-    DwtCoef plane_dat[4];
+    DwtCoef plane_dat[3];
     BitBuf pb;
     QuantLuts luts;
     SliceArgBuf slice;
     ivec2 num_slices;
-    ivec2 slice_dim;
     Plane planes[3];
     int wavelet_depth;
     int size_scaler;

@@ -10,19 +10,20 @@ layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
 struct Plane {
     ivec2 dim;
     ivec2 dwt_dim;
-    int coef_stride;
-    int pad;
 };
 
 layout(push_constant, scalar) uniform ComputeInfo {
     int s;
     int diff_offset;
     int level;
-    int bpp;
     Plane planes[3];
     DwtCoef dst_buf[3];
     DwtCoef src_buf[3];
 };
+
+int align(int x, int a) {
+    return (x + a - 1) & ~(a - 1);
+}
 
 void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
@@ -35,7 +36,8 @@ void main() {
     if (any(greaterThanEqual(coord_x, work_area))) {
         return;
     }
-    int start = planes[plane_idx].dim.x * coord_x.y;
+    int stride = align(planes[plane_idx].dwt_dim.x, 32);
+    int start = stride * coord_x.y;
     int a = src_buf[plane_idx].coef_buf[start + coord_x.x];
     int b = src_buf[plane_idx].coef_buf[start + coord_x.x + 1];
     int dst_b = (b - a) * (1 << s);

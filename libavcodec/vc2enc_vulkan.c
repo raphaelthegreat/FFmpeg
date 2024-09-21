@@ -142,7 +142,6 @@ static int init_vulkan(AVCodecContext *avctx)
         vk_plane.dwt_height = p->dwt_height;
         vk_plane.width = p->width;
         vk_plane.height = p->height;
-        vk_plane.coef_stride = p->coef_stride;
         memcpy(&s->calc_consts.planes[i], &vk_plane, sizeof(vk_plane));
         memcpy(&s->dwt_consts.planes[i], &vk_plane, sizeof(vk_plane));
         memcpy(&s->enc_consts.planes[i], &vk_plane, sizeof(vk_plane));
@@ -154,22 +153,17 @@ static int init_vulkan(AVCodecContext *avctx)
 
     /* Initialize Haar push data */
     s->dwt_consts.diff_offset = s->diff_offset;
-    s->dwt_consts.bpp = s->bpp;
     s->dwt_consts.s = s->wavelet_idx == VC2_TRANSFORM_HAAR_S ? 1 : 0;
     s->dwt_consts.level = 0;
 
     /* Initializer slice calc push data */
     s->calc_consts.num_x = s->num_x;
     s->calc_consts.num_y = s->num_y;
-    s->calc_consts.slice_dim_x = s->slice_width;
-    s->calc_consts.slice_dim_y = s->slice_height;
     s->calc_consts.wavelet_depth = s->wavelet_depth;
     s->calc_consts.prefix_bytes = s->prefix_bytes;
 
     /* Initialize encoder push data */
     s->enc_consts.wavelet_depth = s->wavelet_depth;
-    s->enc_consts.slice_x = s->slice_width;
-    s->enc_consts.slice_y = s->slice_height;
     s->enc_consts.num_x = s->num_x;
     s->enc_consts.num_y = s->num_y;
 

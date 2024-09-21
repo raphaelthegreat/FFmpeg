@@ -131,15 +131,12 @@ typedef struct VC2DwtPlane {
     int height;
     int dwt_width;
     int dwt_height;
-    int coef_stride;
-    int pad;
 } VC2DwtPlane;
 
 typedef struct VC2DwtPushData {
     int s;
     int diff_offset;
     int level;
-    int bpp;
     VC2DwtPlane planes[3];
     VkDeviceAddress src_buf[3];
     VkDeviceAddress dst_buf[3];
@@ -151,14 +148,12 @@ typedef struct VC2EncAuxData {
 } VC2EncAuxData;
 
 typedef struct VC2EncPushData {
-    VkDeviceAddress p[4];
+    VkDeviceAddress p[3];
     VkDeviceAddress pb;
     VkDeviceAddress luts;
     VkDeviceAddress slice;
     int num_x;
     int num_y;
-    int slice_x;
-    int slice_y;
     VC2DwtPlane planes[3];
     int wavelet_depth;
     int size_scaler;
@@ -173,13 +168,11 @@ typedef struct VC2EncSliceArgs {
 } VC2EncSliceArgs;
 
 typedef struct VC2EncSliceCalcPushData {
-    VkDeviceAddress p[4];
+    VkDeviceAddress p[3];
     VkDeviceAddress luts;
     VkDeviceAddress slice;
     int num_x;
     int num_y;
-    int slice_dim_x;
-    int slice_dim_y;
     VC2DwtPlane planes[3];
     int wavelet_depth;
     int size_scaler;
