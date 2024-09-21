@@ -67,9 +67,7 @@ static int init_vulkan_pipeline(VC2EncContext* s, FFVkSPIRVCompiler *spv,
         desc = (FFVulkanDescriptorSetBinding []) {
             {
                 .name       = "plane_imgs",
-                .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .mem_layout = "r8ui",
-                .mem_quali  = "readonly",
+                .type       = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                 .dimensions = 2,
                 .elems      = 3,
                 .prefix     = 'u',
@@ -134,9 +132,7 @@ static int init_vulkan(AVCodecContext *avctx)
                                   VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT, NULL,
                                   s->buf_plane_size * 3,
-                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     dst_vk_buf = (FFVkBuffer*)coef_buf->data;
     s->dst_buf = dst_vk_buf->buf;
 

@@ -1,6 +1,7 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_debug_printf : require
 #extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_samplerless_texture_functions : require
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -40,7 +41,7 @@ void main() {
     int stride = planes[plane_idx].coef_stride;
     uint coef_idx = coord.y * stride + coord.x;
     ivec2 coord_i = clamp(coord, ivec2(0), planes[plane_idx].dim);
-    uint texel = imageLoad(plane_imgs[plane_idx], coord_i).x;
+    uint texel = texelFetch(plane_imgs[plane_idx], coord_i, 0).x;
     int result = int(texel - diff_offset);
     dst_buf[plane_idx].coef_buf[coef_idx] = result;
 }
