@@ -510,7 +510,7 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
                                       max_frame_bytes << s->interlaced,
-                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                      VK_MEMORY_PROPERTY_HOST_CACHED_BIT |
                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         avpkt->buf = avpkt_buf;
