@@ -243,8 +243,8 @@ static void dwt_plane_haar(VC2EncContext *s, FFVkExecContext *exec, VkBufferMemo
     /* Haar pass */
     for (p = 0; p < 3; p++) {
         s->dwt_consts.plane_idx = p;
-        group_x = FFALIGN(s->plane[p].dwt_width, 16) >> 4;
-        group_y = FFALIGN(s->plane[p].dwt_height, 16) >> 4;
+        group_x = FFALIGN(s->plane[p].dwt_width, 8) >> 3;
+        group_y = FFALIGN(s->plane[p].dwt_height, 8) >> 3;
 
         ff_vk_update_push_exec(vkctx, exec, &s->dwt_haar_pl, VK_SHADER_STAGE_COMPUTE_BIT,
                                0, sizeof(VC2DwtPushData), &s->dwt_consts);
