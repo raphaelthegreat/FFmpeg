@@ -147,6 +147,14 @@ int align(int x, int a) {
 
 int quants[MAX_DWT_LEVELS][4];
 
+int subband_coord(int index, int h, int lvl) {
+    int coord = index;
+    coord <<= 1;
+    coord |= h;
+    coord <<= (wavelet_depth-lvl-1);
+    return coord;
+}
+
 void main() {
     int slice_index = int(gl_GlobalInvocationID.x);
     int max_index = num_slices.x * num_slices.y;
@@ -195,12 +203,15 @@ void main() {
                 const int q_idx = quants[level][o];
                 const int qfactor = luts.ff_dirac_qscale_tab[q_idx];
 
+                const int yh = o >> 1;
+                const int xh = o & 1;
+
                 int stride = align(planes[p].dwt_dim.x, 32);
-                int band_ptr = int(o > 1) * band_size.y * stride + (o & 1) * band_size.x;
-                int start = band_ptr + top * stride;
                 for (int y = top; y < bottom; y++) {
                     for (int x = left; x < right; x++) {
-                        int coef = plane_dat[p].coef_buf[start + x];
+                        int sx = subband_coord(x, xh, level);
+                        int sy = subband_coord(y, yh, level);
+                        int coef = plane_dat[p].coef_buf[sy * stride + sx];
                         uint c_abs = uint(abs(coef));
                         c_abs = (c_abs << 2) / qfactor;
                         put_vc2_ue_uint(c_abs);
@@ -208,7 +219,6 @@ void main() {
                             put_bits(1, int(coef < 0));
                         }
                     }
-                    start += stride;
                 }
             }
         }

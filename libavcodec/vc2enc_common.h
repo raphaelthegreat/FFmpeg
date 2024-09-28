@@ -135,7 +135,10 @@ typedef struct VC2DwtPlane {
 
 typedef struct VC2DwtPushData {
     int s;
-    int diff_offset;
+    union {
+        int diff_offset;
+        int plane_idx;
+    };
     int level;
     VC2DwtPlane planes[3];
     VkDeviceAddress src_buf[3];
@@ -247,6 +250,7 @@ typedef struct VC2EncContext {
     FFVkQueueFamilyCtx qf;
     FFVkExecPool e;
 
+    FFVulkanPipeline dwt_haar_pl;
     FFVulkanPipeline dwt_upload_pl, dwt_de_pl;
     FFVulkanPipeline dwt_hor_pl, dwt_ver_pl;
     FFVulkanPipeline slice_pl;

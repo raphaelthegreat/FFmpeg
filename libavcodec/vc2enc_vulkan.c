@@ -45,6 +45,7 @@ extern const char *ff_source_dwt_ver_comp;
 extern const char *ff_source_dwt_ver_legall_comp;
 extern const char *ff_source_slice_sizes_comp;
 extern const char *ff_source_dwt_upload_comp;
+extern const char *ff_source_dwt_haar_comp;
 extern const char *ff_source_dwt_deinterleave_comp;
 
 static int init_vulkan_pipeline(VC2EncContext* s, FFVkSPIRVCompiler *spv,
@@ -215,6 +216,8 @@ static int init_vulkan(AVCodecContext *avctx)
                              "dwt_hor_pl", ff_source_dwt_hor_comp, 0);
         init_vulkan_pipeline(s, spv, &s->dwt_ver_pl, sizeof(VC2DwtPushData),
                              "dwt_ver_pl", ff_source_dwt_ver_comp, 0);
+        init_vulkan_pipeline(s, spv, &s->dwt_haar_pl, sizeof(VC2DwtPushData),
+                             "dwt_haar_pl", ff_source_dwt_haar_comp, 0);
     } else if (s->wavelet_idx == VC2_TRANSFORM_5_3) {
         init_vulkan_pipeline(s, spv, &s->dwt_hor_pl, sizeof(VC2DwtPushData),
                              "dwt_hor_pl", ff_source_dwt_hor_legall_comp, 0);
@@ -230,56 +233,30 @@ static int init_vulkan(AVCodecContext *avctx)
 static void dwt_plane_haar(VC2EncContext *s, FFVkExecContext *exec, VkBufferMemoryBarrier2* buf_bar,
                            uint32_t nb_buf_bar)
 {
-    int i, group_x = s->group_x, group_y = s->group_y;
+    int p, group_x, group_y;
     FFVulkanContext *vkctx = &s->vkctx;
     FFVulkanFunctions *vk = &vkctx->vkfn;
 
+    s->dwt_consts.level = s->wavelet_depth;
+    ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_haar_pl);
+
+    /* Haar pass */
+    for (p = 0; p < 3; p++) {
+        s->dwt_consts.plane_idx = p;
+        group_x = FFALIGN(s->plane[p].dwt_width, 16) >> 4;
+        group_y = FFALIGN(s->plane[p].dwt_height, 16) >> 4;
+
+        ff_vk_update_push_exec(vkctx, exec, &s->dwt_haar_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(VC2DwtPushData), &s->dwt_consts);
+        vk->CmdDispatch(exec->buf, group_x, group_y, 1);
+    }
+
+    /* Wait for Haar dispatches to complete */
     vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
                                            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                                            .pBufferMemoryBarriers = buf_bar,
                                            .bufferMemoryBarrierCount = nb_buf_bar,
                                        });
-
-    /* Perform Haar wavelet trasform */
-    for (i = 0; i < s->wavelet_depth; i++) {
-        s->dwt_consts.level = i;
-
-        /* Horizontal Haar pass */
-        ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_hor_pl);
-        ff_vk_update_push_exec(vkctx, exec, &s->dwt_hor_pl, VK_SHADER_STAGE_COMPUTE_BIT,
-                               0, sizeof(VC2DwtPushData), &s->dwt_consts);
-        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
-        vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
-                                               .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                               .pBufferMemoryBarriers = buf_bar,
-                                               .bufferMemoryBarrierCount = nb_buf_bar,
-                                           });
-        /* Vertical Haar pass */
-        ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_ver_pl);
-        ff_vk_update_push_exec(vkctx, exec, &s->dwt_ver_pl, VK_SHADER_STAGE_COMPUTE_BIT,
-                               0, sizeof(VC2DwtPushData), &s->dwt_consts);
-        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
-        vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
-                                               .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                               .pBufferMemoryBarriers = buf_bar,
-                                               .bufferMemoryBarrierCount = nb_buf_bar,
-                                           });
-
-        /* Deinterleave Haar pass */
-        ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_de_pl);
-        ff_vk_update_push_exec(vkctx, exec, &s->dwt_de_pl, VK_SHADER_STAGE_COMPUTE_BIT,
-                               0, sizeof(VC2DwtPushData), &s->dwt_consts);
-        vk->CmdDispatch(exec->buf, group_x, group_y, 3);
-        vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
-                                               .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                               .pBufferMemoryBarriers = buf_bar,
-                                               .bufferMemoryBarrierCount = nb_buf_bar,
-                                           });
-
-        /* Reduce work area to next level. */
-        group_x = (group_x + 1) >> 1;
-        group_y = (group_y + 1) >> 1;
-    }
 }
 
 static void dwt_plane_legall(VC2EncContext *s, FFVkExecContext *exec, VkBufferMemoryBarrier2* buf_bar,
@@ -290,12 +267,6 @@ static void dwt_plane_legall(VC2EncContext *s, FFVkExecContext *exec, VkBufferMe
     int legall_group_y = (s->plane[0].dwt_width + LEGALL_WORKGROUP_X - 1) >> 6;
     FFVulkanContext *vkctx = &s->vkctx;
     FFVulkanFunctions *vk = &vkctx->vkfn;
-
-    vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
-                                           .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                           .pBufferMemoryBarriers = buf_bar,
-                                           .bufferMemoryBarrierCount = nb_buf_bar,
-                                       });
 
     /* Perform Haar wavelet trasform */
     for (i = 0; i < s->wavelet_depth; i++) {
@@ -316,7 +287,7 @@ static void dwt_plane_legall(VC2EncContext *s, FFVkExecContext *exec, VkBufferMe
         ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_ver_pl);
         ff_vk_update_push_exec(vkctx, exec, &s->dwt_ver_pl, VK_SHADER_STAGE_COMPUTE_BIT,
                                0, sizeof(VC2DwtPushData), &s->dwt_consts);
-        vk->CmdDispatch(exec->buf, legall_group_y, 1, 3);
+        //vk->CmdDispatch(exec->buf, legall_group_y, 1, 3);
         vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
                                                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                                                .pBufferMemoryBarriers = buf_bar,
@@ -407,20 +378,17 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, const AVFrame *fr
                                       VK_IMAGE_LAYOUT_GENERAL,
                                       VK_NULL_HANDLE);
 
-    /* Clear coefficient buffers. */
-    vk->CmdFillBuffer(exec->buf, s->src_buf, 0, s->buf_plane_size * 3, 0U);
-    vk->CmdFillBuffer(exec->buf, s->dst_buf, 0, s->buf_plane_size * 3, 0U);
+    /* Upload coefficients from planes to the buffer. */
+    s->dwt_consts.diff_offset = s->diff_offset;
+    ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_upload_pl);
+    ff_vk_update_push_exec(vkctx, exec, &s->dwt_upload_pl, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, sizeof(VC2DwtPushData), &s->dwt_consts);
+    vk->CmdDispatch(exec->buf, group_x, group_y, 3);
     vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
                                            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                                            .pBufferMemoryBarriers = buf_bar,
                                            .bufferMemoryBarrierCount = nb_buf_bar,
                                        });
-
-    /* Upload coefficients from planes to the buffer. */
-    ff_vk_exec_bind_pipeline(vkctx, exec, &s->dwt_upload_pl);
-    ff_vk_update_push_exec(vkctx, exec, &s->dwt_upload_pl, VK_SHADER_STAGE_COMPUTE_BIT,
-                           0, sizeof(VC2DwtPushData), &s->dwt_consts);
-    vk->CmdDispatch(exec->buf, group_x, group_y, 3);
 
     /* Perform Haar wavelet trasform */
     if (s->wavelet_idx == VC2_TRANSFORM_HAAR || s->wavelet_idx == VC2_TRANSFORM_HAAR_S) {
