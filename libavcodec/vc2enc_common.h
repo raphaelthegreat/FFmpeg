@@ -250,13 +250,11 @@ typedef struct VC2EncContext {
     FFVkQueueFamilyCtx qf;
     FFVkExecPool e;
 
-    FFVulkanPipeline dwt_haar_pl;
-    FFVulkanPipeline dwt_upload_pl, dwt_de_pl;
-    FFVulkanPipeline dwt_hor_pl, dwt_ver_pl;
-    FFVulkanPipeline slice_pl;
-    FFVulkanPipeline enc_pl;
-    FFVkSPIRVShader shd;
-    FFVkSPIRVShader enc_shd;
+    FFVulkanShader dwt_haar_shd;
+    FFVulkanShader dwt_upload_shd, dwt_de_shd;
+    FFVulkanShader dwt_hor_shd, dwt_ver_shd;
+    FFVulkanShader slice_shd;
+    FFVulkanShader enc_shd;
     AVBufferPool* dwt_buf_pool;
 
     VkBuffer src_buf, dst_buf;
