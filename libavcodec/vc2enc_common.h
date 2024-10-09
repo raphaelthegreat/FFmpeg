@@ -141,8 +141,7 @@ typedef struct VC2DwtPushData {
     };
     int level;
     VC2DwtPlane planes[3];
-    VkDeviceAddress src_buf[3];
-    VkDeviceAddress dst_buf[3];
+    VkDeviceAddress pbuf[3];
 } VC2DwtPushData;
 
 typedef struct VC2EncAuxData {
@@ -257,8 +256,7 @@ typedef struct VC2EncContext {
     FFVulkanShader enc_shd;
     AVBufferPool* dwt_buf_pool;
 
-    VkBuffer src_buf, dst_buf;
-    VkBuffer slice_buf;
+    VkBuffer plane_buf, slice_buf;
     uint32_t buf_plane_size;
     VC2EncPushData enc_consts;
     VC2DwtPushData dwt_consts;

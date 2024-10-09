@@ -23,8 +23,7 @@ layout(push_constant, scalar) uniform ComputeInfo {
     int diff_offset;
     int level;
     Plane planes[3];
-    PlaneBuf src_buf[3];
-    DwtCoef dst_buf[3];
+    DwtCoef pbuf[3];
 };
 
 int align(int x, int a) {
@@ -43,5 +42,5 @@ void main() {
     ivec2 coord_i = clamp(coord, ivec2(0), planes[plane_idx].dim);
     uint texel = texelFetch(plane_imgs[plane_idx], coord_i, 0).x;
     int result = int(texel - diff_offset);
-    dst_buf[plane_idx].coef_buf[coef_idx] = result;
+    pbuf[plane_idx].coef_buf[coef_idx] = result;
 }

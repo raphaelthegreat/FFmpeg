@@ -22,8 +22,7 @@ layout(push_constant, scalar) uniform ComputeInfo {
     int plane_idx;
     int wavelet_depth;
     Plane planes[3];
-    DwtCoef dst_buf[3];
-    DwtCoef src_buf[3];
+    DwtCoef pbuf[3];
 };
 
 int dwt_haar_subgroup(int value, int i) {
@@ -72,7 +71,7 @@ void main() {
         return;
     }
     int index = dwt_dim.x * coord.y + coord.x;
-    int value = src_buf[plane_idx].coef_buf[index];
+    int value = pbuf[plane_idx].coef_buf[index];
 
     if (gl_SubgroupSize == 64) {
         for (int i = 0; i < 3; i++) {
@@ -91,5 +90,5 @@ void main() {
     }
  
     // Store value
-    src_buf[plane_idx].coef_buf[index] = value;
+    pbuf[plane_idx].coef_buf[index] = value;
 }
