@@ -250,7 +250,7 @@ typedef struct VC2EncContext {
     FFVkExecPool e;
 
     FFVulkanShader dwt_haar_shd;
-    FFVulkanShader dwt_upload_shd, dwt_de_shd;
+    FFVulkanShader dwt_upload_shd;
     FFVulkanShader dwt_hor_shd, dwt_ver_shd;
     FFVulkanShader slice_shd;
     FFVulkanShader enc_shd;

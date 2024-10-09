@@ -46,7 +46,6 @@ extern const char *ff_source_dwt_ver_legall_comp;
 extern const char *ff_source_slice_sizes_comp;
 extern const char *ff_source_dwt_upload_comp;
 extern const char *ff_source_dwt_haar_comp;
-extern const char *ff_source_dwt_deinterleave_comp;
 
 static int init_vulkan_pipeline(VC2EncContext* s, FFVkSPIRVCompiler *spv,
                                 FFVulkanShader* shd, int push_size,
@@ -190,8 +189,6 @@ static int init_vulkan(AVCodecContext *avctx)
     /* Initialize encoding pipelines */
     init_vulkan_pipeline(s, spv, &s->dwt_upload_shd, sizeof(VC2DwtPushData),
                          8, 8, 1, "dwt_upload_pl", ff_source_dwt_upload_comp, 1);
-    init_vulkan_pipeline(s, spv, &s->dwt_de_shd, sizeof(VC2DwtPushData),
-                         8, 8, 1, "dwt_de_pl", ff_source_dwt_deinterleave_comp, 0);
     init_vulkan_pipeline(s, spv, &s->slice_shd, sizeof(VC2EncPushData),
                          128, 1, 1, "slice_pl", ff_source_slice_sizes_comp, 0);
     init_vulkan_pipeline(s, spv, &s->enc_shd, sizeof(VC2EncPushData),
