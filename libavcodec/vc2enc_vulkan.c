@@ -46,6 +46,7 @@ extern const char *ff_source_dwt_ver_legall_comp;
 extern const char *ff_source_slice_sizes_comp;
 extern const char *ff_source_dwt_upload_comp;
 extern const char *ff_source_dwt_haar_comp;
+extern const char *ff_source_dwt_haar_subgroup_comp;
 
 static int init_vulkan_pipeline(VC2EncContext* s, FFVkSPIRVCompiler *spv,
                                 FFVulkanShader* shd, int push_size,
@@ -101,6 +102,7 @@ static int init_vulkan(AVCodecContext *avctx)
     Plane *p;
     VC2DwtPlane vk_plane;
     int i, level, ret;
+    uint32_t subgroup_size = vkctx->subgroup_props.maxSubgroupSize;
 
     /* Initialize spirv compiler */
     spv = ff_vk_spirv_init();
@@ -186,6 +188,8 @@ static int init_vulkan(AVCodecContext *avctx)
     s->calc_consts.slice = vk_buf->address;
     s->enc_consts.slice = vk_buf->address;
 
+    s->haar_subgroup = 0;
+
     /* Initialize encoding pipelines */
     init_vulkan_pipeline(s, spv, &s->dwt_upload_shd, sizeof(VC2DwtPushData),
                          8, 8, 1, "dwt_upload_pl", ff_source_dwt_upload_comp, 1);
@@ -199,8 +203,18 @@ static int init_vulkan(AVCodecContext *avctx)
                              8, 8, 1, "dwt_hor_pl", ff_source_dwt_hor_comp, 0);
         init_vulkan_pipeline(s, spv, &s->dwt_ver_shd, sizeof(VC2DwtPushData),
                              8, 8, 1, "dwt_ver_pl", ff_source_dwt_ver_comp, 0);
-        init_vulkan_pipeline(s, spv, &s->dwt_haar_shd, sizeof(VC2DwtPushData),
-                             64, 1, 1, "dwt_haar_pl", ff_source_dwt_haar_comp, 0);
+        if (subgroup_size == 32 && s->wavelet_depth < 3) {
+            init_vulkan_pipeline(s, spv, &s->dwt_haar_shd, sizeof(VC2DwtPushData),
+                                 64, 1, 1, "dwt_haar_pl", ff_source_dwt_haar_subgroup_comp, 0);
+            s->haar_subgroup = 1;
+        } else if (subgroup_size == 64 && s->wavelet_depth < 4) {
+            init_vulkan_pipeline(s, spv, &s->dwt_haar_shd, sizeof(VC2DwtPushData),
+                                 64, 1, 1, "dwt_haar_pl", ff_source_dwt_haar_subgroup_comp, 0);
+            s->haar_subgroup = 1;
+        } else {
+            init_vulkan_pipeline(s, spv, &s->dwt_haar_shd, sizeof(VC2DwtPushData),
+                                 16, 16, 1, "dwt_haar_pl", ff_source_dwt_haar_comp, 0);
+        }
     } else if (s->wavelet_idx == VC2_TRANSFORM_5_3) {
         init_vulkan_pipeline(s, spv, &s->dwt_hor_shd, sizeof(VC2DwtPushData),
                              64, 1, 1, "dwt_hor_pl", ff_source_dwt_hor_legall_comp, 0);
@@ -225,8 +239,13 @@ static void dwt_plane_haar(VC2EncContext *s, FFVkExecContext *exec, VkBufferMemo
     /* Haar pass */
     for (p = 0; p < 3; p++) {
         s->dwt_consts.plane_idx = p;
-        group_x = FFALIGN(s->plane[p].dwt_width, 8) >> 3;
-        group_y = FFALIGN(s->plane[p].dwt_height, 8) >> 3;
+        if (s->haar_subgroup) {
+            group_x = FFALIGN(s->plane[p].dwt_width, 8) >> 3;
+            group_y = FFALIGN(s->plane[p].dwt_height, 8) >> 3;
+        } else {
+            group_x = FFALIGN(s->plane[p].dwt_width, 16) >> 4;
+            group_y = FFALIGN(s->plane[p].dwt_height, 16) >> 4;
+        }
 
         ff_vk_shader_update_push_const(vkctx, exec, &s->dwt_haar_shd, VK_SHADER_STAGE_COMPUTE_BIT,
                                        0, sizeof(VC2DwtPushData), &s->dwt_consts);

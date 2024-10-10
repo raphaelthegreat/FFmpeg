@@ -255,6 +255,7 @@ typedef struct VC2EncContext {
     FFVulkanShader slice_shd;
     FFVulkanShader enc_shd;
     AVBufferPool* dwt_buf_pool;
+    int haar_subgroup;
 
     VkBuffer plane_buf, slice_buf;
     uint32_t buf_plane_size;
