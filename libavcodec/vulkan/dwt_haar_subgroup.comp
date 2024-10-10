@@ -1,7 +1,7 @@
 #extension GL_EXT_scalar_block_layout : require
-#extension GL_EXT_debug_printf : require
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_EXT_buffer_reference : require
 
 #define TILE_DIM 8
 #define LOCAL_X 64

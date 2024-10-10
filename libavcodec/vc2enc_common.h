@@ -28,7 +28,7 @@
 
 #include "vc2enc_dwt.h"
 #include "diractab.h"
-#include "vulkan.h"
+#include "libavutil/vulkan.h"
 
 /* The limited size resolution of each slice forces us to do this */
 #define SSIZE_ROUND(b) (FFALIGN((b), s->size_scaler) + 4 + s->prefix_bytes)

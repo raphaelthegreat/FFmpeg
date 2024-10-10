@@ -24,24 +24,22 @@
 #include "libavutil/pixdesc.h"
 #include "libavutil/opt.h"
 #include "libavutil/version.h"
-#include "libavfilter/vulkan_spirv.h"
+#include "libavutil/vulkan_spirv.h"
 #include "libavutil/hwcontext_vulkan.h"
 #include "libavutil/vulkan_loader.h"
+#include "libavutil/vulkan.h"
 #include "codec_internal.h"
 #include "internal.h"
 #include "encode.h"
 #include "version.h"
 #include "vc2enc_common.h"
-#include "vulkan.h"
 #include "hwconfig.h"
 
 #define LEGALL_WORKGROUP_X 64
 #define SLICE_WORKGROUP_X 128
 
 extern const char *ff_source_encode_comp;
-extern const char *ff_source_dwt_hor_comp;
 extern const char *ff_source_dwt_hor_legall_comp;
-extern const char *ff_source_dwt_ver_comp;
 extern const char *ff_source_dwt_ver_legall_comp;
 extern const char *ff_source_slice_sizes_comp;
 extern const char *ff_source_dwt_upload_comp;
@@ -68,10 +66,11 @@ static int init_vulkan_pipeline(VC2EncContext* s, FFVkSPIRVCompiler *spv,
         desc = (FFVulkanDescriptorSetBinding []) {
             {
                 .name       = "plane_imgs",
-                .type       = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                .mem_layout = ff_vk_shader_rep_fmt(vkctx->frames->sw_format,
+                                                   s->vkctx.hwfc->format, FF_VK_REP_NATIVE),
                 .dimensions = 2,
                 .elems      = 3,
-                .prefix     = 'u',
                 .stages     = VK_SHADER_STAGE_COMPUTE_BIT,
             },
         };
@@ -82,7 +81,7 @@ static int init_vulkan_pipeline(VC2EncContext* s, FFVkSPIRVCompiler *spv,
     GLSLD(pl_source);
 
     /* Compile Haar shader */
-    RET(spv->compile_shader(spv, vkctx, shd, &spv_data, &spv_len, "main", &spv_opaque));
+    RET(spv->compile_shader(vkctx, spv, shd, &spv_data, &spv_len, "main", &spv_opaque));
     RET(ff_vk_shader_link(vkctx, shd, spv_data, spv_len, "main"));
     RET(ff_vk_shader_register_exec(vkctx, &s->e, shd));
 
@@ -199,10 +198,6 @@ static int init_vulkan(AVCodecContext *avctx)
                          128, 1, 1, "enc_pl", ff_source_encode_comp, 0);
 
     if (s->wavelet_idx == VC2_TRANSFORM_HAAR || s->wavelet_idx == VC2_TRANSFORM_HAAR_S) {
-        init_vulkan_pipeline(s, spv, &s->dwt_hor_shd, sizeof(VC2DwtPushData),
-                             8, 8, 1, "dwt_hor_pl", ff_source_dwt_hor_comp, 0);
-        init_vulkan_pipeline(s, spv, &s->dwt_ver_shd, sizeof(VC2DwtPushData),
-                             8, 8, 1, "dwt_ver_pl", ff_source_dwt_ver_comp, 0);
         if (subgroup_size == 32 && s->wavelet_depth < 3) {
             init_vulkan_pipeline(s, spv, &s->dwt_haar_shd, sizeof(VC2DwtPushData),
                                  64, 1, 1, "dwt_haar_pl", ff_source_dwt_haar_subgroup_comp, 0);

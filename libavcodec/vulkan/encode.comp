@@ -1,6 +1,6 @@
 #extension GL_EXT_shader_explicit_arithmetic_types : require
 #extension GL_EXT_scalar_block_layout : require
-#extension GL_EXT_debug_printf : require
+#extension GL_EXT_buffer_reference : require
 
 #define WORKGROUP_X 128
 layout(local_size_x = WORKGROUP_X, local_size_y = 1, local_size_z = 1) in;
