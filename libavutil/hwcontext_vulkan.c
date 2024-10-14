@@ -4194,13 +4194,12 @@ static int vulkan_transfer_frame(AVHWFramesContext *hwfc,
     }
 
     err = ff_vk_exec_submit(&p->vkctx, exec);
-    if (err < 0) {
+    if (err < 0)
         ff_vk_exec_discard_deps(&p->vkctx, exec);
-    } else if (!upload) {
-        ff_vk_exec_wait(&p->vkctx, exec);
-        if (!host_mapped)
-            err = copy_buffer_data(hwfc, bufs[0], swf, region, planes, 0);
-    }
+
+    ff_vk_exec_wait(&p->vkctx, exec);
+    if (!upload && !host_mapped)
+        err = copy_buffer_data(hwfc, bufs[0], swf, region, planes, 0);
 
 end:
     for (int i = 0; i < nb_bufs; i++)
