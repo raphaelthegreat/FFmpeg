@@ -300,7 +300,6 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
     VkBufferMemoryBarrier2 buf_bar;
     VkBufferMemoryBarrier2 slice_buf_bar;
     VkImageView views[AV_NUM_DATA_POINTERS];
-    VkFormat rep_fmts[AV_NUM_DATA_POINTERS];
     VkImageMemoryBarrier2 img_bar[AV_NUM_DATA_POINTERS];
     int nb_img_bar = 0;
 
@@ -317,13 +316,10 @@ static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
         .offset = 0,
     };
 
-    for (i = 0; i < AV_NUM_DATA_POINTERS; i++) {
-        rep_fmts[i] = s->bpp == 2 ? VK_FORMAT_R16_UINT : VK_FORMAT_R8_UINT;
-    }
     ff_vk_exec_add_dep_frame(vkctx, exec, frame,
                              VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
-    ff_vk_create_imageviews_with_format(vkctx, exec, views, frame, rep_fmts);
+    ff_vk_create_imageviews(vkctx, exec, views, frame, FF_VK_REP_UINT);
     ff_vk_frame_barrier(vkctx, exec, frame, img_bar, &nb_img_bar,
                         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -546,11 +542,6 @@ static av_cold int vc2_encode_end(AVCodecContext *avctx)
 
     av_log(avctx, AV_LOG_INFO, "Qavg: %i\n", s->q_avg);
 
-    for (i = 0; i < 3; i++) {
-        ff_vc2enc_free_transforms(&s->transform_args[i].t);
-        av_freep(&s->plane[i].coef_buf);
-    }
-
     return 0;
 }
 
@@ -691,13 +682,6 @@ static av_cold int vc2_encode_init(AVCodecContext *avctx)
                 b->shift = (o > 1)*b->height*b->stride + (o & 1)*b->width;
             }
         }
-
-        /* DWT init */
-        if (ff_vc2enc_init_transforms(&s->transform_args[i].t,
-                                      s->plane[i].coef_stride,
-                                      s->plane[i].dwt_height,
-                                      s->slice_width, s->slice_height))
-            return AVERROR(ENOMEM);
     }
 
     /* Slices */
