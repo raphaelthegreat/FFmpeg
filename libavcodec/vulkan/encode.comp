@@ -1,6 +1,7 @@
 #extension GL_EXT_shader_explicit_arithmetic_types : require
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_buffer_reference : require
+#extension GL_EXT_debug_printf : require
 
 #define WORKGROUP_X 128
 layout(local_size_x = WORKGROUP_X, local_size_y = 1, local_size_z = 1) in;
@@ -31,6 +32,9 @@ layout(scalar, buffer_reference, buffer_reference_align = 1) buffer BitBuf {
 layout(scalar, buffer_reference, buffer_reference_align = 1) buffer BitBufByte {
     uint8_t data[];
 };
+layout(scalar, buffer_reference, buffer_reference_align = 1) buffer BitBufQword {
+    uint64_t data[];
+};
 layout(scalar, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
     int quant[5][4];
     int ff_dirac_qscale_tab[116];
@@ -48,13 +52,20 @@ layout(push_constant, scalar) uniform ComputeInfo {
     int prefix_bytes;
 };
 
-#define BUF_BITS 32
+#define BUF_BITS 64
 #define BUF_BYTES 4
 
-int bit_buf = 0;
+uint64_t bit_buf = 0;
 int bit_left = BUF_BITS;
 int write_start = 0;
 int write_ptr = 0;
+
+uint64_t byteswap(uint64_t value) {
+    u32vec2 val = unpack32(value);
+    val.x = pack32(unpack8(val.x).wzyx);
+    val.y = pack32(unpack8(val.y).wzyx);
+    return pack64(val.yx);
+}
 
 void put_bits(int n, int value) {
     if (n < bit_left) {
@@ -63,8 +74,9 @@ void put_bits(int n, int value) {
     } else {
         bit_buf <<= bit_left;
         bit_buf |= (value >> (n - bit_left));
-        uint data = pack32(unpack8(bit_buf).wzyx);
-        pb.data[write_ptr++] = data;
+        uint64_t pbb = uint64_t(pb) + write_ptr * 4;
+        BitBufQword(pbb).data[0] = byteswap(bit_buf);
+        write_ptr += 2;
         bit_left += BUF_BITS - n;
         bit_buf = value;
     }
@@ -74,8 +86,9 @@ void flush_put_bits() {
     int bit_left_lo = (bit_left >> 3) << 3;
     bit_buf <<= (bit_left - bit_left_lo);
     if (bit_left_lo == 0) {
-        uint data = pack32(unpack8(bit_buf).wzyx);
-        pb.data[write_ptr++] = data;
+        uint64_t pbb = uint64_t(pb) + write_ptr * 4;
+        BitBufQword(pbb).data[0] = byteswap(bit_buf);
+        write_ptr += 2;
         bit_left = BUF_BITS;
         bit_buf = 0;
     } else {
@@ -98,11 +111,13 @@ void skip_put_bytes(int n) {
         bit_left -= n_bits;
         return;
     }
-    if (bit_left < 32) {
+    if (bit_left < BUF_BITS) {
         int mask = (1 << bit_left) - 1;
         bit_buf <<= bit_left;
         bit_buf |= mask;
-        pb.data[write_ptr++] = pack32(unpack8(bit_buf).wzyx);
+        uint64_t pbb = uint64_t(pb) + write_ptr * 4;
+        BitBufQword(pbb).data[0] = byteswap(bit_buf);
+        write_ptr += 2;
         n -= bit_left >> 3;
     }
     int skip_dwords = n >> 2;
