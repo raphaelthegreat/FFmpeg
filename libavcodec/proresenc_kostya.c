@@ -229,7 +229,7 @@ typedef struct ProresThreadData {
 
 typedef struct ProresContext {
     AVClass *class;
-    DECLARE_ALIGNED(16, int16_t, blocks)[MAX_PLANES][64 * 4 * MAX_MBS_PER_SLICE];
+    DECLARE_ALIGNED(16, int16_t, blocks)[64 * 4 * MAX_MBS_PER_SLICE];
     DECLARE_ALIGNED(16, uint16_t, emu_buf)[16*16];
     int16_t quants[MAX_STORED_Q][64];
     int16_t quants_chroma[MAX_STORED_Q][64];
@@ -588,22 +588,22 @@ static int encode_slice(AVCodecContext *avctx, const AVFrame *pic,
         if (i < 3) {
             get_slice_data(ctx, src, linesize, xp, yp,
                            pwidth, avctx->height / ctx->pictures_per_frame,
-                           ctx->blocks[0], ctx->emu_buf,
+                           ctx->blocks, ctx->emu_buf,
                            mbs_per_slice, num_cblocks, is_chroma);
             if (!is_chroma) {/* luma quant */
                 encode_slice_plane(ctx, pb, src, linesize,
-                                   mbs_per_slice, ctx->blocks[0],
+                                   mbs_per_slice, ctx->blocks,
                                    num_cblocks, qmat);
             } else { /* chroma plane */
                 encode_slice_plane(ctx, pb, src, linesize,
-                                   mbs_per_slice, ctx->blocks[0],
+                                   mbs_per_slice, ctx->blocks,
                                    num_cblocks, qmat_chroma);
             }
         } else {
             get_alpha_data(ctx, src, linesize, xp, yp,
                            pwidth, avctx->height / ctx->pictures_per_frame,
-                           ctx->blocks[0], mbs_per_slice, ctx->alpha_bits);
-            encode_alpha_plane(ctx, pb, mbs_per_slice, ctx->blocks[0], quant);
+                           ctx->blocks, mbs_per_slice, ctx->alpha_bits);
+            encode_alpha_plane(ctx, pb, mbs_per_slice, ctx->blocks, quant);
         }
         flush_put_bits(pb);
         sizes[i]   = put_bytes_output(pb) - total_size;
