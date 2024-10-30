@@ -1,0 +1,205 @@
+#version 450 core
+
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_shared_memory_block : require
+
+layout(local_size_x = 8, local_size_y = 4, local_size_z = 1) in;
+
+layout (scalar, buffer_reference, buffer_reference_align = 2) buffer HalfUword {
+    u16vec4 data[];
+};
+
+#define MAX_PLANES 4
+
+layout(push_constant, scalar) uniform ProresContext {
+    HalfUword planes[MAX_PLANES];
+    int linesize[MAX_PLANES];
+};
+
+#define DCTSIZE 8
+#define MB_DIM 16
+#define MAX_MBS_PER_SLICE 8
+
+shared Blocks {
+    int16_t blocks[16 * 16];
+};
+shared Storage {
+    u16vec4 blocks_vec[16 * 4];
+};
+
+#define CONST_BITS  13
+#define PASS1_BITS  4 /* set this to 2 if 16x16 multiplies are faster */
+#define OUT_SHIFT   PASS1_BITS
+
+#define FIX_0_541196100 4433U  /* FIX(0.541196100) */
+#define FIX_0_765366865 6270U /* FIX(0.765366865) */
+#define FIX_1_847759065 15137U /* FIX(1.847759065) */
+#define FIX_1_175875602 9633U /* FIX(1.175875602) */
+#define FIX_0_298631336 2446U /* FIX(0.298631336) */
+#define FIX_3_072711026 25172U /* FIX(3.072711026) */
+#define FIX_1_501321110 12299U /* FIX(1.501321110) */
+#define FIX_0_899976223 7373U /* FIX(0.899976223) */
+#define FIX_1_961570560 16069U /* FIX(1.961570560) */
+#define FIX_2_053119869 16819U /* FIX(2.053119869) */
+#define FIX_2_562915447 20995U /* FIX(2.562915447) */
+#define FIX_0_390180644 3196U /* FIX(0.390180644) */
+
+int16_t descale(uint32_t x, int32_t n) {
+    int32_t tmp = int32_t(x) + (1 << (n - 1));
+    return int16_t(tmp >> n);
+}
+
+#define MULTIPLY(var, cons) int32_t((var) * uint32_t(cons))
+
+void row_fdct(uint start) {
+    /* Each 16x16 macroblock consists of 4 8x8 blocks. */
+    uint row = start + MB_DIM * gl_LocalInvocationID.x;
+
+    /* Pass 1: process rows. */
+    int32_t tmp0 = blocks[row] + blocks[row + 7];
+    int32_t tmp7 = blocks[row] - blocks[row + 7];
+    int32_t tmp1 = blocks[row + 1] + blocks[row + 6];
+    int32_t tmp6 = blocks[row + 1] - blocks[row + 6];
+    int32_t tmp2 = blocks[row + 2] + blocks[row + 5];
+    int32_t tmp5 = blocks[row + 2] - blocks[row + 5];
+    int32_t tmp3 = blocks[row + 3] + blocks[row + 4];
+    int32_t tmp4 = blocks[row + 3] - blocks[row + 4];
+
+    /* Even part per LL&M figure 1 --- note that published figure is faulty;
+     * rotator "sqrt(2)*c1" should be "sqrt(2)*c6".
+     */
+    int32_t tmp10 = tmp0 + tmp3;
+    int32_t tmp13 = tmp0 - tmp3;
+    int32_t tmp11 = tmp1 + tmp2;
+    int32_t tmp12 = tmp1 - tmp2;
+
+    blocks[row] = int16_t((tmp10 + tmp11) * (1 << PASS1_BITS));
+    blocks[row + 4] = int16_t((tmp10 - tmp11) * (1 << PASS1_BITS));
+
+    uint32_t z1 = MULTIPLY(tmp12 + tmp13, FIX_0_541196100);
+    blocks[row + 2] = descale(z1 + MULTIPLY(tmp13, FIX_0_765366865), CONST_BITS-PASS1_BITS);
+    blocks[row + 6] = descale(z1 + MULTIPLY(tmp12, -FIX_1_847759065), CONST_BITS-PASS1_BITS);
+
+    /* Odd part per figure 8 --- note paper omits factor of sqrt(2).
+     * cK represents cos(K*pi/16).
+     * i0..i3 in the paper are tmp4..tmp7 here.
+     */
+    z1 = tmp4 + tmp7;
+    uint32_t z2 = tmp5 + tmp6;
+    uint32_t z3 = tmp4 + tmp6;
+    uint32_t z4 = tmp5 + tmp7;
+    uint32_t z5 = (z3 + z4) * FIX_1_175875602; /* sqrt(2) * c3 */
+
+    tmp4 = MULTIPLY(tmp4, FIX_0_298631336); /* sqrt(2) * (-c1+c3+c5-c7) */
+    tmp5 = MULTIPLY(tmp5, FIX_2_053119869); /* sqrt(2) * ( c1+c3-c5+c7) */
+    tmp6 = MULTIPLY(tmp6, FIX_3_072711026); /* sqrt(2) * ( c1+c3+c5-c7) */
+    tmp7 = MULTIPLY(tmp7, FIX_1_501321110); /* sqrt(2) * ( c1+c3-c5-c7) */
+    z1 = MULTIPLY(z1, - FIX_0_899976223); /* sqrt(2) * (c7-c3) */
+    z2 = MULTIPLY(z2, - FIX_2_562915447); /* sqrt(2) * (-c1-c3) */
+    z3 = MULTIPLY(z3, - FIX_1_961570560); /* sqrt(2) * (-c3-c5) */
+    z4 = MULTIPLY(z4, - FIX_0_390180644); /* sqrt(2) * (c5-c3) */
+
+    z3 += z5;
+    z4 += z5;
+
+    blocks[row + 7] = descale(tmp4 + z1 + z3, CONST_BITS - PASS1_BITS);
+    blocks[row + 5] = descale(tmp5 + z2 + z4, CONST_BITS - PASS1_BITS);
+    blocks[row + 3] = descale(tmp6 + z2 + z3, CONST_BITS - PASS1_BITS);
+    blocks[row + 1] = descale(tmp7 + z1 + z4, CONST_BITS - PASS1_BITS);
+}
+
+void ff_jpeg_fdct_islow(uint start) {
+    row_fdct(start);
+
+    uint col = start + gl_LocalInvocationID.x;
+
+  /* Pass 2: process columns.
+   * We remove the PASS1_BITS scaling, but leave the results scaled up
+   * by an overall factor of 8.
+   */
+    int32_t tmp0 = blocks[col + DCTSIZE*0] + blocks[col + DCTSIZE*7];
+    int32_t tmp7 = blocks[col + DCTSIZE*0] - blocks[col + DCTSIZE*7];
+    int32_t tmp1 = blocks[col + DCTSIZE*1] + blocks[col + DCTSIZE*6];
+    int32_t tmp6 = blocks[col + DCTSIZE*1] - blocks[col + DCTSIZE*6];
+    int32_t tmp2 = blocks[col + DCTSIZE*2] + blocks[col + DCTSIZE*5];
+    int32_t tmp5 = blocks[col + DCTSIZE*2] - blocks[col + DCTSIZE*5];
+    int32_t tmp3 = blocks[col + DCTSIZE*3] + blocks[col + DCTSIZE*4];
+    int32_t tmp4 = blocks[col + DCTSIZE*3] - blocks[col + DCTSIZE*4];
+
+    /* Even part per LL&M figure 1 --- note that published figure is faulty;
+        * rotator "sqrt(2)*c1" should be "sqrt(2)*c6".
+        */
+    int32_t tmp10 = tmp0 + tmp3;
+    int32_t tmp13 = tmp0 - tmp3;
+    int32_t tmp11 = tmp1 + tmp2;
+    int32_t tmp12 = tmp1 - tmp2;
+
+    blocks[col + DCTSIZE*0] = descale(tmp10 + tmp11, OUT_SHIFT);
+    blocks[col + DCTSIZE*4] = descale(tmp10 - tmp11, OUT_SHIFT);
+
+    uint32_t z1 = (tmp12 + tmp13) * FIX_0_541196100;
+    blocks[col + DCTSIZE*2] = descale(z1 + tmp13 * FIX_0_765366865, CONST_BITS + OUT_SHIFT);
+    blocks[col + DCTSIZE*6] = descale(z1 + tmp12 * (-FIX_1_847759065), CONST_BITS + OUT_SHIFT);
+
+    /* Odd part per figure 8 --- note paper omits factor of sqrt(2).
+        * cK represents cos(K*pi/16).
+        * i0..i3 in the paper are tmp4..tmp7 here.
+        */
+
+    z1 = tmp4 + tmp7;
+    uint32_t z2 = tmp5 + tmp6;
+    uint32_t z3 = tmp4 + tmp6;
+    uint32_t z4 = tmp5 + tmp7;
+    uint32_t z5 = MULTIPLY(z3 + z4, FIX_1_175875602); /* sqrt(2) * c3 */
+
+    tmp4 = MULTIPLY(tmp4, FIX_0_298631336); /* sqrt(2) * (-c1+c3+c5-c7) */
+    tmp5 = MULTIPLY(tmp5, FIX_2_053119869); /* sqrt(2) * ( c1+c3-c5+c7) */
+    tmp6 = MULTIPLY(tmp6, FIX_3_072711026); /* sqrt(2) * ( c1+c3+c5-c7) */
+    tmp7 = MULTIPLY(tmp7, FIX_1_501321110); /* sqrt(2) * ( c1+c3-c5-c7) */
+    z1 = MULTIPLY(z1, - FIX_0_899976223); /* sqrt(2) * (c7-c3) */
+    z2 = MULTIPLY(z2, - FIX_2_562915447); /* sqrt(2) * (-c1-c3) */
+    z3 = MULTIPLY(z3, - FIX_1_961570560); /* sqrt(2) * (-c3-c5) */
+    z4 = MULTIPLY(z4, - FIX_0_390180644); /* sqrt(2) * (c5-c3) */
+
+    z3 += z5;
+    z4 += z5;
+
+    blocks[col + DCTSIZE*7] = descale(tmp4 + z1 + z3, CONST_BITS + OUT_SHIFT);
+    blocks[col + DCTSIZE*5] = descale(tmp5 + z2 + z4, CONST_BITS + OUT_SHIFT);
+    blocks[col + DCTSIZE*3] = descale(tmp6 + z2 + z3, CONST_BITS + OUT_SHIFT);
+    blocks[col + DCTSIZE*1] = descale(tmp7 + z1 + z4, CONST_BITS + OUT_SHIFT);
+}
+
+void main() {
+    /* Deduce the start offset in shared memory area for current macroblock. */
+    uint block = gl_LocalInvocationID.y;
+    uint plane = gl_WorkGroupID.z;
+    bool is_chroma = plane == 1 || plane == 2;
+    uint block_y = is_chroma ? (block & 1) : (block >> 1);
+    uint block_x = is_chroma ? (block >> 1) : (block & 1);
+    uint start = DCTSIZE * DCTSIZE * block;
+
+    /* Deduce the start of the current invocation in input picture data. */
+    if (plane < 3) {
+        int stride = linesize[plane] >> 1;
+        uint macroblock_start = MB_DIM * (gl_WorkGroupID.y * stride + gl_WorkGroupID.x);
+        macroblock_start += DCTSIZE * (block_y * stride + block_x);
+        macroblock_start >>= 2;
+
+        /* Upload block samples to shared memory. */
+        uint start_shmem = (start + gl_LocalInvocationID.x * MB_DIM) >> 2;
+        blocks_vec[start_shmem] = planes[plane].data[macroblock_start];
+        blocks_vec[start_shmem + 1] = planes[plane].data[macroblock_start + 1];
+
+        /* Perform the forward DCT on one block of samples. */
+        ff_jpeg_fdct_islow(start);
+
+        /* Write back result to memory. */
+        planes[plane].data[macroblock_start] = blocks_vec[start_shmem];
+        planes[plane].data[macroblock_start + 1] = blocks_vec[start_shmem + 1];
+    } else {
+        //get_alpha_data(plane, start);
+    }
+}

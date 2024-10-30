@@ -1,0 +1,300 @@
+#version 450 core
+
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_shared_memory_block : require
+
+layout(local_size_x = 16, local_size_y = 2, local_size_z = 1) in;
+
+#define MAX_STORED_Q 16
+#define MAX_PLANES 4
+#define TRELLIS_WIDTH 16
+#define MAX_BLOCKS_PER_SLICE 32
+#define SCORE_LIMIT (0x7FFFFFFF / 2)
+#define FIRST_DC_CB 0xB8
+
+layout (scalar, buffer_reference, buffer_reference_align = 2) buffer HalfUword {
+    u16vec4 data[];
+};
+
+layout (scalar, buffer_reference, buffer_reference_align = 2) buffer Quants {
+    int16_t quants[MAX_STORED_Q][64];
+    int16_t quants_chroma[MAX_STORED_Q][64];
+    int16_t custom_q[64];
+    int16_t custom_chroma_q[64];
+}
+
+struct TrellisNode {
+    int prev_node;
+    int quant;
+    int bits;
+    int score;
+};
+
+layout (scalar, buffer_reference) buffer Trellis {
+    TrellisNode nodes[][];
+};
+
+layout(push_constant, scalar) uniform ProresContext {
+    HalfUword planes[MAX_PLANES];
+    Quants quants;
+    TrellisNode trellis;
+    int linesize[MAX_PLANES];
+    int min_quant;
+    int max_quant;
+    int alpha_bits;
+    int num_planes;
+    int bits_per_mb;
+    int mbs_per_slice;
+};
+
+const uint8_t ff_prores_dc_codebook[7] = uint8_t[7](0x04, 0x28, 0x28, 0x4D, 0x4D, 0x70, 0x70);
+
+int estimate_vlc(uint codebook, int val)
+{
+    int exponent;
+
+    /* Number of prefix bits to switch between Rice and expGolomb */
+    uint switch_bits = (codebook & 3) + 1;
+    uint rice_order  =  codebook >> 5;       /* rice code order */
+    uint exp_order   = (codebook >> 2) & 7;  /* exp golomb code order */
+    uint switch_val  = switch_bits << rice_order;
+
+    if (val >= switch_val) {
+        val -= switch_val - (1 << exp_order);
+        exponent = findMSB(val);
+        return exponent * 2 - exp_order + switch_bits + 1;
+    } else {
+        return (val >> rice_order) + rice_order + 1;
+    }
+}
+
+#define GET_SIGN(x)  ((x) >> 31)
+#define MAKE_CODE(x) (((x) * 2) ^ GET_SIGN(x))
+
+struct FindQuatState
+{
+    int bits;
+    int error;
+    int dc[MAX_BLOCKS_PER_SLICE];
+    int signs[MAX_BLOCKS_PER_SLICE];
+    int codebooks[MAX_BLOCKS_PER_SLICE] = int[32](5);
+    int runs[MAX_BLOCKS_PER_SLICE] = int[32](4);
+    int levels[MAX_BLOCKS_PER_SLICE] = int[32](2);
+};
+
+shared
+{
+    FindQuantState states[TRELLIS_WIDTH];
+};
+
+#define state states[min_quant + gl_LocalInvocationID.y]
+
+void estimate_dcs(int scale)
+{
+    int start = gl_LocalInvocationID.x * 64;
+    state.dc[gl_LocalInvocationID.x] = (blocks[start] - 0x4000) / scale;
+    atomicAdd(state.error, abs(blocks[start] - 0x4000) % scale);
+    
+    if (gl_LocalInvocationID.x == 0) {
+        atomicAdd(state.bits, estimate_vlc(FIRST_DC_CB, MAKE_CODE(state.dc[0])));
+        return;
+    }
+
+    barrier();
+    int delta = state.dc[gl_LocalInvocationID.x] - state.dc[gl_LocalInvocationID.x - 1];
+    state.signs[gl_LocalInvocationID.x] = GET_SIGN(delta);
+    barrier();
+
+    int cur_sign = state.signs[gl_LocalInvocationID.x - 1];
+    delta = (delta ^ cur_sign) - cur_sign;
+    int code = MAKE_CODE(delta);
+    state.codebooks[gl_LocalInvocationID.x] = min(code, 6);
+    barrier();
+
+    int codebook = state.codebooks[gl_LocalInvocationID.x - 1];
+    atomicAdd(state.bits, estimate_vlc(ff_prores_dc_codebook[codebook], code));
+}
+
+int estimate_acs(inout int error, int16_t *blocks, int blocks_per_slice,
+                 const uint8_t *scan, const int16_t *qmat)
+{
+    int prev_run = 4;
+    int prev_level = 2;
+    int bits = 0;
+    int max_coeffs = blocks_per_slice << 6;
+    int run = 0;
+
+    for (int i = 1; i < 64; i++) {
+        int idx = scan[i] + gl_LocalInvocationID.x * 64;
+        int level = blocks[idx] / qmat[scan[i]];
+        if (level != 0) {
+            int abs_level = abs(level);
+            atomicAdd(bits, estimate_vlc(ff_prores_run_to_cb[prev_run], run));
+            atomicAdd(bits, estimate_vlc(ff_prores_level_to_cb[prev_level],
+                                    abs_level - 1) + 1);
+
+            prev_run = min(run, 15);
+            prev_level = min(abs_level, 9);
+            run = 0;
+        } else {
+            run++;
+        }
+    }
+
+    for (int i = 1; i < 64; i++) {
+        int idx = scan[i] + gl_LocalInvocationID.x * 64;
+        int level = blocks[idx] / qmat[scan[i]];
+        atomicAdd(error, abs(blocks[idx]) % qmat[scan[i]]);
+        if (level != 0) {
+            int abs_level = abs(level);
+            atomicAdd(bits, estimate_vlc(ff_prores_run_to_cb[prev_run], run));
+            atomicAdd(bits, estimate_vlc(ff_prores_level_to_cb[prev_level],
+                                    abs_level - 1) + 1);
+
+            prev_run = min(run, 15);
+            prev_level = min(abs_level, 9);
+            run = 0;
+        } else {
+            run++;
+        }
+    }
+
+    for (int i = 1; i < 64; i++) {
+        for (int idx = scan[i]; idx < max_coeffs; idx += 64) {
+            int level = blocks[idx] / qmat[scan[i]];
+            error += abs(blocks[idx]) % qmat[scan[i]];
+            if (level != 0) {
+                int abs_level = abs(level);
+                bits += estimate_vlc(ff_prores_run_to_cb[prev_run], run);
+                bits += estimate_vlc(ff_prores_level_to_cb[prev_level],
+                                     abs_level - 1) + 1;
+
+                prev_run = min(run, 15);
+                prev_level = min(abs_level, 9);
+                run = 0;
+            } else {
+                run++;
+            }
+        }
+    }
+
+    return bits;
+}
+
+#define FFALIGN(x, a) (((x)+(a)-1)&~((a)-1))
+
+void estimate_slice_plane(int plane, int mbs_per_slice, int blocks_per_mb, const int16_t* qmat) {
+    int blocks_per_slice = mbs_per_slice * blocks_per_mb;
+    estimate_dcs(qmat[0]);
+    estimate_acs(blocks_per_slice, ctx->scantable, qmat);
+    barrier();
+    state.bits = FFALIGN(state.bits, 8);
+    barrier();
+}
+
+void main() {
+    int mb = gl_WorkGroupID.x % mb_width;
+    int td = gl_WorkGroupID.x / mb_width;
+    int trellis_node = (mb + 1) * TRELLIS_WIDTH;
+    for (int i = 0; i < MAX_BLOCKS_PER_SLICE; i++) {
+        state.codebooks[i] = 5;
+        state.runs[i] = 4;
+        state.levels[i] = 2;
+    }
+
+    const int q = gl_LocalInvocationID.y + min_quant;
+    trellis.nodes[td][trellis_node + q].prev_node = -1;
+    trellis.nodes[td][trellis_node + q].quant = q;
+
+    //if (alpha_bits) {
+    //    alpha_bits = estimate_alpha_plane(linesize[3], mbs_per_slice, td->blocks[3]);
+    //}
+    state.error = 0;
+    state.bits = alpha_bits;
+    /* Estimate luma plane */
+    estimate_slice_plane(0, linesize[0], mbs_per_slice, num_cblocks[0], quants.quants[q]);
+    for (int i = 1; i < (num_planes - (alpha_bits != 0 ? 1 : 0)); i++) {
+        /* Estimate chroma plane */
+        estimate_slice_plane(i, linesize[i], mbs_per_slice, num_cblocks[i], quants.quants_chroma[q], td);
+    }
+    if (state.bits > 65000 * 8) {
+        state.error = SCORE_LIMIT;
+    }
+
+    int overquant;
+    if (states[max_quant].bits <= bits_per_mb * mbs_per_slice) {
+        states[max_quant + 1].bits = states[max_quant].bits;
+        states[max_quant + 1].error = states[max_quant].error + 1;
+        overquant = max_quant;
+    } else {
+        for (q = max_quant + 1; q < 128; q++) {
+            bits = alpha_bits;
+            error = 0;
+            if (q < MAX_STORED_Q) {
+                qmat = quants.quants[q];
+                qmat_chroma = quants.quants_chroma[q];
+            } else {
+                qmat = td->custom_q;
+                qmat_chroma = td->custom_chroma_q;
+                for (i = 0; i < 64; i++) {
+                    qmat[i] = ctx->quant_mat[i] * q;
+                    qmat_chroma[i] = ctx->quant_chroma_mat[i] * q;
+                }
+            }
+            bits += estimate_slice_plane(error, 0, linesize[0],
+                                         mbs_per_slice,
+                                         num_cblocks[0],
+                                         qmat, td);/* estimate luma plane */
+            for (int i = 1; i < ctx->num_planes - !!ctx->alpha_bits; i++) { /* estimate chroma plane */
+                bits += estimate_slice_plane(error, i, linesize[i], mbs_per_slice,
+                                             num_cblocks[i], qmat_chroma, td);
+            }
+            if (bits <= ctx->bits_per_mb * mbs_per_slice)
+                break;
+        }
+
+        slice_bits[max_quant + 1] = bits;
+        slice_score[max_quant + 1] = error;
+        overquant = q;
+    }
+    trellis.nodes[trellis_node + max_quant + 1].quant = overquant;
+
+    int bits_limit = mbs * ctx->bits_per_mb;
+    for (int pq = min_quant; pq < max_quant + 2; pq++) {
+        prev = trellis_node - TRELLIS_WIDTH + pq;
+
+        for (q = min_quant; q < max_quant + 2; q++) {
+            cur = trellis_node + q;
+
+            bits  = td->nodes[prev].bits + slice_bits[q];
+            error = slice_score[q];
+            if (bits > bits_limit)
+                error = SCORE_LIMIT;
+
+            if (td->nodes[prev].score < SCORE_LIMIT && error < SCORE_LIMIT)
+                new_score = td->nodes[prev].score + error;
+            else
+                new_score = SCORE_LIMIT;
+            if (td->nodes[cur].prev_node == -1 ||
+                td->nodes[cur].score >= new_score) {
+
+                td->nodes[cur].bits      = bits;
+                td->nodes[cur].score     = new_score;
+                td->nodes[cur].prev_node = prev;
+            }
+        }
+    }
+
+    error = trellis.nodes[trellis_node + min_quant].score;
+    pq = trellis_node + min_quant;
+    for (q = min_quant + 1; q < max_quant + 2; q++) {
+        if (trellis.nodes[trellis_node + q].score <= error) {
+            error = td->nodes[trellis_node + q].score;
+            pq    = trellis_node + q;
+        }
+    }
+
+    return pq;
+}

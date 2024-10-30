@@ -644,8 +644,8 @@ static int estimate_dcs(int *error, int16_t *blocks, int blocks_per_slice,
     prev_dc  = (blocks[0] - 0x4000) / scale;
     bits     = estimate_vlc(FIRST_DC_CB, MAKE_CODE(prev_dc));
     sign     = 0;
-    *error  += FFABS(blocks[0] - 0x4000) % scale;
     blocks  += 64;
+    *error  += FFABS(blocks[0] - 0x4000) % scale;
 
     for (i = 1; i < blocks_per_slice; i++, blocks += 64) {
         dc       = (blocks[0] - 0x4000) / scale;
@@ -676,8 +676,8 @@ static int estimate_acs(int *error, int16_t *blocks, int blocks_per_slice,
     max_coeffs = blocks_per_slice << 6;
     run        = 0;
 
-    for (i = 1; i < 64; i++) { // For each pixel in 8x8 block
-        for (idx = scan[i]; idx < max_coeffs; idx += 64) { // For each pixel in each of the blocks in slice
+    for (i = 1; i < 64; i++) {
+        for (idx = scan[i]; idx < max_coeffs; idx += 64) {
             level   = blocks[idx] / qmat[scan[i]];
             *error += FFABS(blocks[idx]) % qmat[scan[i]];
             if (level) {
@@ -1370,8 +1370,8 @@ static const AVClass proresenc_class = {
     .version    = LIBAVUTIL_VERSION_INT,
 };
 
-const FFCodec ff_prores_ks_encoder = {
-    .p.name         = "prores_ks",
+const FFCodec ff_prores_ks_vulkan_encoder = {
+    .p.name         = "prores_ks_vulkan",
     CODEC_LONG_NAME("Apple ProRes (iCodec Pro)"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_PRORES,
