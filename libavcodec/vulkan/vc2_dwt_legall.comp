@@ -1,10 +1,7 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_debug_printf : require
 
-#define TILE_DIM 16
 #define LOCAL_X 256
-
-layout(local_size_x = TILE_DIM, local_size_y = TILE_DIM, local_size_z = 1) in;
 
 layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
     int coef_buf[];
