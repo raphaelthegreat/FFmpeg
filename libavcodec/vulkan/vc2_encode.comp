@@ -43,40 +43,6 @@ layout(push_constant, scalar) uniform ComputeInfo {
     int prefix_bytes;
 };
 
-/* Same as skip_put_bytes in put_bits.h but fills in 0xFF */
-void skip_put_bytes(inout PutBitContext pb, int n)
-{
-    int bytes_left = pb.bit_left >> 3;
-    if (n < bytes_left)
-    {
-        int n_bits = n << 3;
-        int mask = (1 << n_bits) - 1;
-        pb.bit_buf <<= n_bits;
-        pb.bit_buf |= mask;
-        pb.bit_left -= uint8_t(n_bits);
-        return;
-    }
-    if (pb.bit_left < BUF_BITS)
-    {
-        int mask = (1 << pb.bit_left) - 1;
-        pb.bit_buf <<= pb.bit_left;
-        pb.bit_buf |= mask;
-        u32vec2buf(pb.buf).v = BUF_REVERSE(pb.bit_buf);
-        pb.buf += BUF_BYTES;
-        n -= pb.bit_left >> 3;
-    }
-    int skip_dwords = n >> 2;
-    while (skip_dwords > 0)
-    {
-        u32buf(pb.buf).v = 0xFFFFFFFF;
-        pb.buf += 4;
-        skip_dwords--;
-    }
-    int skip_bits = (n & 3) << 3;
-    pb.bit_buf = (1 << skip_bits) - 1;
-    pb.bit_left = uint8_t(BUF_BITS - skip_bits);
-}
-
 void put_vc2_ue_uint(inout PutBitContext pb, uint val)
 {
     int pbits = 0, topbit = 1, maxval = 1, bits = 0;
