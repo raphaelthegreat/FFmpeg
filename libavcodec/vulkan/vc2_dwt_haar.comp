@@ -35,7 +35,8 @@ void main()
     int value = pbuf[plane_idx].coef_buf[index];
 
     /* Perform Haar wavelet on the 16x16 local workgroup with shared memory */
-    for (int i = 0; i < wavelet_depth; i++) {
+    for (int i = 0; i < wavelet_depth; i++)
+    {
         ivec2 mask = ivec2((1 << i) - 1);
         if (any(notEqual(coord & mask, ivec2(0))))
             break;

@@ -56,22 +56,19 @@ layout(buffer_reference, buffer_reference_align = 8) buffer u64buf {
 #define mid_pred(a, b, c) \
     max(min((a), (b)), min(max((a), (b)), (c)))
 
-/* TODO: optimize */
 uint align(uint src, uint a)
 {
-    uint res = src % a;
-    if (res == 0)
-        return src;
-    return src + a - res;
+    return (src + a - 1) & ~(a - 1);
 }
 
-/* TODO: optimize */
+int align(int src, int a)
+{
+    return (src + a - 1) & ~(a - 1);
+}
+
 uint64_t align64(uint64_t src, uint64_t a)
 {
-    uint64_t res = src % a;
-    if (res == 0)
-        return src;
-    return src + a - res;
+    return (src + a - 1) & ~(a - 1);
 }
 
 #define reverse4(src) \

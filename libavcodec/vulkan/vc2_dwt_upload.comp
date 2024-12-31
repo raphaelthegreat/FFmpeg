@@ -25,11 +25,6 @@ layout(push_constant, scalar) uniform ComputeInfo {
     DwtCoef pbuf[3];
 };
 
-int align(int x, int a)
-{
-    return (x + a - 1) & ~(a - 1);
-}
-
 void main()
 {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
