@@ -35,6 +35,7 @@
 #include "vc2enc_common.h"
 #include "hwconfig.h"
 
+#define LEGALL_TILE_DIM 16
 #define LEGALL_WORKGROUP_X 64
 #define SLICE_WORKGROUP_X 128
 
@@ -194,9 +195,9 @@ static int init_vulkan(AVCodecContext *avctx)
     init_vulkan_pipeline(s, spv, &s->dwt_upload_shd, sizeof(VC2DwtPushData),
                          8, 8, 1, "dwt_upload_pl", ff_source_vc2_dwt_upload_comp, 1);
     init_vulkan_pipeline(s, spv, &s->slice_shd, sizeof(VC2EncPushData),
-                         128, 1, 1, "slice_pl", ff_source_vc2_slice_sizes_comp, 0);
+                         SLICE_WORKGROUP_X, 1, 1, "slice_pl", ff_source_vc2_slice_sizes_comp, 0);
     init_vulkan_pipeline(s, spv, &s->enc_shd, sizeof(VC2EncPushData),
-                         128, 1, 1, "enc_pl", ff_source_vc2_encode_comp, 0);
+                         SLICE_WORKGROUP_X, 1, 1, "enc_pl", ff_source_vc2_encode_comp, 0);
 
     if (s->wavelet_idx == VC2_TRANSFORM_HAAR || s->wavelet_idx == VC2_TRANSFORM_HAAR_S) {
         if (subgroup_size == 32 && s->wavelet_depth < 3) {
@@ -213,9 +214,9 @@ static int init_vulkan(AVCodecContext *avctx)
         }
     } else if (s->wavelet_idx == VC2_TRANSFORM_5_3) {
         init_vulkan_pipeline(s, spv, &s->dwt_hor_shd, sizeof(VC2DwtPushData),
-                             64, 1, 1, "dwt_hor_pl", ff_source_vc2_dwt_hor_legall_comp, 0);
+                             LEGALL_WORKGROUP_X, 1, 1, "dwt_hor_pl", ff_source_vc2_dwt_hor_legall_comp, 0);
         init_vulkan_pipeline(s, spv, &s->dwt_ver_shd, sizeof(VC2DwtPushData),
-                             64, 1, 1, "dwt_ver_pl", ff_source_vc2_dwt_ver_legall_comp, 0);
+                             LEGALL_WORKGROUP_X, 1, 1, "dwt_ver_pl", ff_source_vc2_dwt_ver_legall_comp, 0);
     }
 
     s->group_x = s->plane[0].dwt_width >> 3;

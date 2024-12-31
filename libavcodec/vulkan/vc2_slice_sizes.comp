@@ -2,9 +2,6 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_buffer_reference : require
 
-#define WORKGROUP_X 128
-layout(local_size_x = WORKGROUP_X, local_size_y = 1, local_size_z = 1) in;
-
 #define DIRAC_MAX_QUANT_INDEX 116
 #define MAX_DWT_LEVELS 5
 
@@ -65,7 +62,7 @@ int count_vc2_ue_uint(uint val)
 
 int cache[DIRAC_MAX_QUANT_INDEX];
 int quants[MAX_DWT_LEVELS][4];
-shared int slice_sizes[WORKGROUP_X];
+shared int slice_sizes[gl_WorkGroupSize.x];
 
 int subband_coord(int index, int h, int lvl)
 {
