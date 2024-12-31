@@ -46,14 +46,15 @@ layout(push_constant, scalar) uniform ComputeInfo {
     int bits_floor;
 };
 
-int count_vc2_ue_uint(uint val) {
+int count_vc2_ue_uint(uint val)
+{
     uint topbit = 1, maxval = 1;
     int bits = 0;
-    if (val == 0) {
+    if (val == 0)
         return 1;
-    }
     val++;
-    while (val > maxval) {
+    while (val > maxval)
+    {
         bits++;
         topbit <<= 1;
         maxval <<= 1;
@@ -62,7 +63,8 @@ int count_vc2_ue_uint(uint val) {
     return bits * 2 + 1;
 }
 
-int ffalign(int x, int a) {
+int ffalign(int x, int a)
+{
     return (x + a - 1) & ~(a - 1);
 }
 
@@ -70,7 +72,8 @@ int cache[DIRAC_MAX_QUANT_INDEX];
 int quants[MAX_DWT_LEVELS][4];
 shared int slice_sizes[WORKGROUP_X];
 
-int subband_coord(int index, int h, int lvl) {
+int subband_coord(int index, int h, int lvl)
+{
     int coord = index;
     coord <<= 1;
     coord |= h;
@@ -78,11 +81,11 @@ int subband_coord(int index, int h, int lvl) {
     return coord;
 }
 
-int count_hq_slice(int quant_index) {
+int count_hq_slice(int quant_index)
+{
     int bits = 0;
-    if (cache[quant_index] != 0) {
+    if (cache[quant_index] != 0)
         return cache[quant_index];
-    }
 
     bits += 8*prefix_bytes;
     bits += 8; /* quant_idx */
@@ -93,12 +96,15 @@ int count_hq_slice(int quant_index) {
 
     int slice_index = int(gl_GlobalInvocationID.x);
     ivec2 slice_coord = ivec2(slice_index % num_slices.x, slice_index / num_slices.x);
-    for (int p = 0; p < 3; p++) {
+    for (int p = 0; p < 3; p++)
+    {
         int bytes_start = bits >> 3;
         bits += 8;
-        for (int level = 0; level < wavelet_depth; level++) {
+        for (int level = 0; level < wavelet_depth; level++)
+        {
             ivec2 band_dim = planes[p].dwt_dim >> (wavelet_depth - level);
-            for (int o = int(level > 0); o < 4; o++) {
+            for (int o = int(level > 0); o < 4; o++)
+            {
                 const int left = band_dim.x * slice_coord.x / num_slices.x;
                 const int right = band_dim.x * (slice_coord.x+1) / num_slices.x;
                 const int top = band_dim.y * slice_coord.y / num_slices.y;
@@ -111,8 +117,10 @@ int count_hq_slice(int quant_index) {
                 const int xh = o & 1;
 
                 const int stride = ffalign(planes[p].dwt_dim.x, 32);
-                for (int y = top; y < bottom; y++) {
-                    for (int x = left; x < right; x++) {
+                for (int y = top; y < bottom; y++)
+                {
+                    for (int x = left; x < right; x++)
+                    {
                         int sx = subband_coord(x, xh, level);
                         int sy = subband_coord(y, yh, level);
                         int coef = plane_dat[p].coef_buf[sy * stride + sx];
@@ -135,19 +143,21 @@ int count_hq_slice(int quant_index) {
     return bits;
 }
 
-int ssize_round(int b) {
+int ssize_round(int b)
+{
     return ffalign(b, size_scaler) + 4 + prefix_bytes;
 }
 
-void main() {
+void main()
+{
     int slice_index = int(gl_GlobalInvocationID.x);
     int max_index = num_slices.x * num_slices.y;
-    if (slice_index >= max_index) {
+    if (slice_index >= max_index)
         return;
-    }
-    for (int i = 0; i < DIRAC_MAX_QUANT_INDEX; i++) {
+
+    for (int i = 0; i < DIRAC_MAX_QUANT_INDEX; i++)
         cache[i] = 0;
-    }
+
     const int q_ceil = DIRAC_MAX_QUANT_INDEX;
     const int top = bits_ceil;
     const int bottom = bits_floor;
@@ -156,11 +166,13 @@ void main() {
     int step = 1;
     int bits_last = 0;
     int bits = count_hq_slice(quant);
-    while ((bits > top) || (bits < bottom)) {
+    while ((bits > top) || (bits < bottom))
+    {
         const int signed_step = bits > top ? +step : -step;
         quant = clamp(quant + signed_step, 0, q_ceil-1);
         bits = count_hq_slice(quant);
-        if (quant_buf[1] == quant) {
+        if (quant_buf[1] == quant)
+        {
             quant = max(quant_buf[0], quant);
             bits = quant == quant_buf[0] ? bits_last : bits;
             break;
@@ -175,10 +187,10 @@ void main() {
     slice.args[slice_index].bytes = bytes;
     slice_sizes[gl_LocalInvocationIndex] = bytes;
     barrier();
+
     /* Prefix sum for all slices in current workgroup */
     int total_bytes = 0;
-    for (int i = 0; i < gl_LocalInvocationIndex; i++) {
+    for (int i = 0; i < gl_LocalInvocationIndex; i++)
         total_bytes += slice_sizes[i];
-    }
     slice.args[slice_index].pb_start = total_bytes;
 }

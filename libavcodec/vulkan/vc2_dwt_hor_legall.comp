@@ -20,18 +20,19 @@ layout(push_constant, scalar) uniform ComputeInfo {
     DwtCoef pbuf[3];
 };
 
-int align(int x, int a) {
+int align(int x, int a)
+{
     return (x + a - 1) & ~(a - 1);
 }
 
-void main() {
+void main()
+{
     int coord_y = int(gl_GlobalInvocationID.x);
     uint plane_idx = gl_GlobalInvocationID.z;
     ivec2 work_area = planes[plane_idx].dwt_dim;
     int dist = 1 << level;
-    if (coord_y >= work_area.y || (coord_y & (dist - 1)) != 0) {
+    if (coord_y >= work_area.y || (coord_y & (dist - 1)) != 0)
         return;
-    }
 
     DwtCoef buf = pbuf[plane_idx];
     ivec2 dwt_area = work_area >> 1;
@@ -39,9 +40,8 @@ void main() {
     int start = stride * coord_y;
     
     // Shift in one bit that is used for additional precision
-    for (int x = 0; x < work_area.x; x += dist) {
+    for (int x = 0; x < work_area.x; x += dist)
         buf.coef_buf[start + x] = buf.coef_buf[start + x] << 1;
-    }
 
     // Lifting stage 2
     for (int x = 0; x < work_area.x - 2 * dist; x += 2 * dist) {
