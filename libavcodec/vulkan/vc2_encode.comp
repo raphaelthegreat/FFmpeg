@@ -29,9 +29,6 @@ layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
 layout(scalar, buffer_reference, buffer_reference_align = 1) buffer BitBuf {
     uint data[];
 };
-layout(scalar, buffer_reference, buffer_reference_align = 1) buffer BitBufByte {
-    uint8_t data[];
-};
 layout(scalar, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
     int quant[5][4];
     int ff_dirac_qscale_tab[116];
@@ -50,9 +47,11 @@ layout(push_constant, scalar) uniform ComputeInfo {
 };
 
 /* Same as skip_put_bytes in put_bits.h but fills in 0xFF */
-void skip_put_bytes(inout PutBitContext pb, int n) {
+void skip_put_bytes(inout PutBitContext pb, int n)
+{
     int bytes_left = pb.bit_left >> 3;
-    if (n < bytes_left) {
+    if (n < bytes_left)
+    {
         int n_bits = n << 3;
         int mask = (1 << n_bits) - 1;
         pb.bit_buf <<= n_bits;
@@ -60,7 +59,8 @@ void skip_put_bytes(inout PutBitContext pb, int n) {
         pb.bit_left -= uint8_t(n_bits);
         return;
     }
-    if (pb.bit_left < BUF_BITS) {
+    if (pb.bit_left < BUF_BITS)
+    {
         int mask = (1 << pb.bit_left) - 1;
         pb.bit_buf <<= pb.bit_left;
         pb.bit_buf |= mask;
@@ -69,7 +69,8 @@ void skip_put_bytes(inout PutBitContext pb, int n) {
         n -= pb.bit_left >> 3;
     }
     int skip_dwords = n >> 2;
-    while (skip_dwords > 0) {
+    while (skip_dwords > 0)
+    {
         u32buf(pb.buf).v = 0xFFFFFFFF;
         pb.buf += 4;
         skip_dwords--;
@@ -79,39 +80,44 @@ void skip_put_bytes(inout PutBitContext pb, int n) {
     pb.bit_left = uint8_t(BUF_BITS - skip_bits);
 }
 
-void put_vc2_ue_uint(inout PutBitContext pb, uint val) {
+void put_vc2_ue_uint(inout PutBitContext pb, uint val)
+{
     int pbits = 0, topbit = 1, maxval = 1, bits = 0;
-    if (val == 0) {
+    if (val == 0)
+    {
         put_bits(pb, 1, 1);
         return;
     }
     val++;
 
-    while (val > maxval) {
+    while (val > maxval)
+    {
         topbit <<= 1;
         bits++;
         maxval <<= 1;
         maxval |=  1;
     }
 
-    for (int i = 0; i < bits; i++) {
+    for (int i = 0; i < bits; i++)
+    {
         topbit >>= 1;
         pbits <<= 2;
-        if ((val & topbit) != 0) {
+        if ((val & topbit) != 0)
             pbits |= 1;
-        }
     }
 
     put_bits(pb, bits * 2 + 1, (pbits << 1) | 1);
 }
 
-int align(int x, int a) {
+int align(int x, int a)
+{
     return (x + a - 1) & ~(a - 1);
 }
 
 int quants[MAX_DWT_LEVELS][4];
 
-int subband_coord(int index, int h, int lvl) {
+int subband_coord(int index, int h, int lvl)
+{
     int coord = index;
     coord <<= 1;
     coord |= h;
@@ -119,12 +125,12 @@ int subband_coord(int index, int h, int lvl) {
     return coord;
 }
 
-void main() {
+void main()
+{
     int slice_index = int(gl_GlobalInvocationID.x);
     int max_index = num_slices.x * num_slices.y;
-    if (slice_index >= max_index) {
+    if (slice_index >= max_index)
         return;
-    }
 
     /* Step 2. Quantize and encode */
     int pb_start = slice.args[slice_index].pb_start;
@@ -147,7 +153,8 @@ void main() {
     put_bits(pb, 8, quant_index);
 
     /* Luma + 2 Chroma planes */
-    for (int p = 0; p < 3; p++) {
+    for (int p = 0; p < 3; p++)
+    {
         int pad_s, pad_c;
         int bytes_start = put_bytes_count(pb);
 
@@ -155,9 +162,11 @@ void main() {
         uint64_t write_ptr_start = pb.buf;
         int bit_left_start = pb.bit_left;
         put_bits(pb, 8, 0);
-        for (int level = 0; level < wavelet_depth; level++) {
+        for (int level = 0; level < wavelet_depth; level++)
+        {
             ivec2 band_size = planes[p].dwt_dim >> (wavelet_depth - level);
-            for (int o = int(level > 0); o < 4; o++) {
+            for (int o = int(level > 0); o < 4; o++)
+            {
                 /* Encode subband */
                 int left = band_size.x * (slice_coord.x) / num_slices.x;
                 int right = band_size.x * (slice_coord.x+1) / num_slices.x;
@@ -171,28 +180,32 @@ void main() {
                 const int xh = o & 1;
 
                 int stride = align(planes[p].dwt_dim.x, 32);
-                for (int y = top; y < bottom; y++) {
-                    for (int x = left; x < right; x++) {
+                for (int y = top; y < bottom; y++)
+                {
+                    for (int x = left; x < right; x++)
+                    {
                         int sx = subband_coord(x, xh, level);
                         int sy = subband_coord(y, yh, level);
                         int coef = plane_dat[p].coef_buf[sy * stride + sx];
                         uint c_abs = uint(abs(coef));
                         c_abs = (c_abs << 2) / qfactor;
                         put_vc2_ue_uint(pb, c_abs);
-                        if (c_abs != 0) {
+                        if (c_abs != 0)
                             put_bits(pb, 1, int(coef < 0));
-                        }
                     }
                 }
             }
         }
         flush_put_bits(pb);
         int bytes_len = put_bytes_count(pb) - bytes_start - 1;
-        if (p == 2) {
+        if (p == 2)
+        {
             int len_diff = slice_bytes_max - put_bytes_count(pb);
             pad_s = align((bytes_len + len_diff), size_scaler)/size_scaler;
             pad_c = (pad_s*size_scaler) - bytes_len;
-        } else {
+        }
+        else
+        {
             pad_s = align(bytes_len, size_scaler)/size_scaler;
             pad_c = (pad_s*size_scaler) - bytes_len;
         }

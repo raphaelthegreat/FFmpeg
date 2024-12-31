@@ -24,19 +24,20 @@ layout(push_constant, scalar) uniform ComputeInfo {
     DwtCoef src_buf[3];
 };
 
-int align(int x, int a) {
+int align(int x, int a)
+{
     return (x + a - 1) & ~(a - 1);
 }
 
 shared uint local_coef[LOCAL_X];
 
-void main() {
+void main()
+{
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
     ivec2 work_area = planes[plane_idx].dwt_dim;
     ivec2 dwt_area = work_area >> 1;
-    if (any(greaterThanEqual(coord, work_area))) {
+    if (any(greaterThanEqual(coord, work_area)))
         return;
-    }
 
     DwtCoef src = src_buf[plane_idx];
     DwtCoef dst = dst_buf[plane_idx];
@@ -45,17 +46,15 @@ void main() {
     
     for (int i = 0; i < wavelet_depth; i++) {
         ivec2 mask = ivec2((1 << i) - 1);
-        if (any(notEqual(coord & mask, ivec2(0)))) {
+        if (any(notEqual(coord & mask, ivec2(0))))
             break;
-        }
         
         mask <<= 1;
         mask |= 1;
 
         // Shift in one bit that is used for additional precision
-        for (int x = 0; x < work_area.x; x++) {
+        for (int x = 0; x < work_area.x; x++)
             dst.coef_buf[start + x] = src.coef_buf[start + x] << 1;
-        }
 
         // Lifting stage 2
         for (int x = 0; x < dwt_area.x - 1; x++) {

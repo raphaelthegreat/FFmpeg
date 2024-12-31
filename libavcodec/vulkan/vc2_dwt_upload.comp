@@ -25,17 +25,19 @@ layout(push_constant, scalar) uniform ComputeInfo {
     DwtCoef pbuf[3];
 };
 
-int align(int x, int a) {
+int align(int x, int a)
+{
     return (x + a - 1) & ~(a - 1);
 }
 
-void main() {
+void main()
+{
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
     uint plane_idx = gl_GlobalInvocationID.z;
     ivec2 work_area = planes[plane_idx].dwt_dim;
-    if (any(greaterThanEqual(coord, work_area))) {
+    if (any(greaterThanEqual(coord, work_area)))
         return;
-    }
+
     int stride = align(planes[plane_idx].dwt_dim.x, 32);
     uint coef_idx = coord.y * stride + coord.x;
     ivec2 coord_i = clamp(coord, ivec2(0), planes[plane_idx].dim);
