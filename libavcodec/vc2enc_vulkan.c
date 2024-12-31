@@ -78,10 +78,8 @@ static int init_vulkan_pipeline(VC2EncContext* s, FFVkSPIRVCompiler *spv,
     }
 
     ff_vk_shader_add_push_const(shd, 0, push_size, VK_SHADER_STAGE_COMPUTE_BIT);
-    if (strcmp(pl_name, "enc_pl") == 0) {
-        av_bprintf(&shd->src, "#define PB_UNALIGNED\n"                   );
-        GLSLD(ff_source_common_comp);
-    }
+    av_bprintf(&shd->src, "#define PB_UNALIGNED\n"                   );
+    GLSLD(ff_source_common_comp);
     GLSLD(pl_source);
 
     /* Compile Haar shader */

@@ -24,11 +24,6 @@ layout(push_constant, scalar) uniform ComputeInfo {
     DwtCoef src_buf[3];
 };
 
-int align(int x, int a)
-{
-    return (x + a - 1) & ~(a - 1);
-}
-
 shared uint local_coef[LOCAL_X];
 
 void main()

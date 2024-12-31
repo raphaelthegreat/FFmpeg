@@ -63,11 +63,6 @@ int count_vc2_ue_uint(uint val)
     return bits * 2 + 1;
 }
 
-int ffalign(int x, int a)
-{
-    return (x + a - 1) & ~(a - 1);
-}
-
 int cache[DIRAC_MAX_QUANT_INDEX];
 int quants[MAX_DWT_LEVELS][4];
 shared int slice_sizes[WORKGROUP_X];
@@ -100,6 +95,8 @@ int count_hq_slice(int quant_index)
     {
         int bytes_start = bits >> 3;
         bits += 8;
+
+        const int stride = align(planes[p].dwt_dim.x, 32);
         for (int level = 0; level < wavelet_depth; level++)
         {
             ivec2 band_dim = planes[p].dwt_dim >> (wavelet_depth - level);
@@ -116,7 +113,6 @@ int count_hq_slice(int quant_index)
                 const int yh = o >> 1;
                 const int xh = o & 1;
 
-                const int stride = ffalign(planes[p].dwt_dim.x, 32);
                 for (int y = top; y < bottom; y++)
                 {
                     for (int x = left; x < right; x++)
@@ -132,9 +128,9 @@ int count_hq_slice(int quant_index)
                 }
             }
         }
-        bits += ffalign(bits, 8) - bits;
+        bits += align(bits, 8) - bits;
         int bytes_len = (bits >> 3) - bytes_start - 1;
-        int pad_s = ffalign(bytes_len, size_scaler) / size_scaler;
+        int pad_s = align(bytes_len, size_scaler) / size_scaler;
         int pad_c = (pad_s * size_scaler) - bytes_len;
         bits += pad_c * 8;
     }
@@ -145,7 +141,7 @@ int count_hq_slice(int quant_index)
 
 int ssize_round(int b)
 {
-    return ffalign(b, size_scaler) + 4 + prefix_bytes;
+    return align(b, size_scaler) + 4 + prefix_bytes;
 }
 
 void main()

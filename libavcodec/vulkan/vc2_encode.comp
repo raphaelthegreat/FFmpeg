@@ -109,11 +109,6 @@ void put_vc2_ue_uint(inout PutBitContext pb, uint val)
     put_bits(pb, bits * 2 + 1, (pbits << 1) | 1);
 }
 
-int align(int x, int a)
-{
-    return (x + a - 1) & ~(a - 1);
-}
-
 int quants[MAX_DWT_LEVELS][4];
 
 int subband_coord(int index, int h, int lvl)
@@ -162,6 +157,8 @@ void main()
         uint64_t write_ptr_start = pb.buf;
         int bit_left_start = pb.bit_left;
         put_bits(pb, 8, 0);
+
+        int stride = align(planes[p].dwt_dim.x, 32);
         for (int level = 0; level < wavelet_depth; level++)
         {
             ivec2 band_size = planes[p].dwt_dim >> (wavelet_depth - level);
@@ -179,7 +176,6 @@ void main()
                 const int yh = o >> 1;
                 const int xh = o & 1;
 
-                int stride = align(planes[p].dwt_dim.x, 32);
                 for (int y = top; y < bottom; y++)
                 {
                     for (int x = left; x < right; x++)

@@ -20,11 +20,6 @@ layout(push_constant, scalar) uniform ComputeInfo {
     DwtCoef pbuf[3];
 };
 
-int align(int x, int a)
-{
-    return (x + a - 1) & ~(a - 1);
-}
-
 void main()
 {
     int coord_x = int(gl_GlobalInvocationID.x);
