@@ -453,24 +453,24 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
     }
 
     /* Sequence header */
-    encode_parse_info(s, DIRAC_PCODE_SEQ_HEADER);
-    encode_seq_header(s);
+    ff_vc2_encode_parse_info(s, DIRAC_PCODE_SEQ_HEADER);
+    ff_vc2_encode_seq_header(s);
 
     /* Encoder version */
     if (aux_data) {
-        encode_parse_info(s, DIRAC_PCODE_AUX);
+        ff_vc2_encode_parse_info(s, DIRAC_PCODE_AUX);
         ff_put_string(&s->pb, aux_data, 1);
     }
 
     /* Picture header */
-    encode_parse_info(s, DIRAC_PCODE_PICTURE_HQ);
-    encode_picture_start(s);
+    ff_vc2_encode_parse_info(s, DIRAC_PCODE_PICTURE_HQ);
+    ff_vc2_encode_picture_start(s);
 
     /* Encode slices */
     vulkan_encode_slices(s, exec);
 
     /* End sequence */
-    encode_parse_info(s, DIRAC_PCODE_END_SEQ);
+    ff_vc2_encode_parse_info(s, DIRAC_PCODE_END_SEQ);
 
     return 0;
 }

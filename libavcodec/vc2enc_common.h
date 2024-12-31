@@ -264,16 +264,59 @@ typedef struct VC2EncContext {
     VC2EncSliceCalcPushData calc_consts;
 } VC2EncContext;
 
-void put_vc2_ue_uint(PutBitContext *pb, uint32_t val);
+static inline void put_vc2_ue_uint(PutBitContext *pb, uint32_t val)
+{
+    int i;
+    int bits = 0;
+    unsigned topbit = 1, maxval = 1;
+    uint64_t pbits = 0;
 
-int count_vc2_ue_uint(uint32_t val);
+    if (!val++) {
+        put_bits(pb, 1, 1);
+        return;
+    }
 
-void init_quant_matrix(VC2EncContext *s);
+    while (val > maxval) {
+        topbit <<= 1;
+        maxval <<= 1;
+        maxval |=  1;
+    }
 
-void encode_parse_info(VC2EncContext *s, enum DiracParseCodes pcode);
+    bits = ff_log2(topbit);
 
-void encode_seq_header(VC2EncContext *s);
+    for (i = 0; i < bits; i++) {
+        topbit >>= 1;
+        av_assert2(pbits <= UINT64_MAX>>3);
+        pbits <<= 2;
+        if (val & topbit)
+            pbits |= 0x1;
+    }
 
-void encode_picture_start(VC2EncContext *s);
+    put_bits64(pb, bits*2 + 1, (pbits << 1) | 1);
+}
+
+static inline int count_vc2_ue_uint(uint32_t val)
+{
+    int topbit = 1, maxval = 1;
+
+    if (!val++)
+        return 1;
+
+    while (val > maxval) {
+        topbit <<= 1;
+        maxval <<= 1;
+        maxval |=  1;
+    }
+
+    return ff_log2(topbit)*2 + 1;
+}
+
+void ff_vc2_init_quant_matrix(VC2EncContext *s);
+
+void ff_vc2_encode_parse_info(VC2EncContext *s, enum DiracParseCodes pcode);
+
+void ff_vc2_encode_seq_header(VC2EncContext *s);
+
+void ff_vc2_encode_picture_start(VC2EncContext *s);
 
 #endif
