@@ -52,31 +52,37 @@ static int init_vulkan_pipeline(VC2EncContext* s, FFVkSPIRVCompiler *spv,
                                 FFVulkanShader* shd, int push_size,
                                 int lg_x, int lg_y, int lg_z,
                                 const char* pl_name, const char* pl_source,
-                                int plane_img)
+                                int num_desc)
 {
+    int err = 0;
     uint8_t *spv_data;
     size_t spv_len;
     void *spv_opaque = NULL;
     FFVulkanContext *vkctx = &s->vkctx;
     FFVulkanDescriptorSetBinding *desc;
-    int err = 0;
 
     ff_vk_shader_init(vkctx, shd, pl_name, VK_SHADER_STAGE_COMPUTE_BIT,
                       NULL, 0, lg_x, lg_y, lg_z, 0);
 
-    if (plane_img) {
-        desc = (FFVulkanDescriptorSetBinding []) {
-            {
-                .name       = "plane_imgs",
-                .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .mem_layout = ff_vk_shader_rep_fmt(vkctx->frames->sw_format, FF_VK_REP_NATIVE),
-                .dimensions = 2,
-                .elems      = 3,
-                .stages     = VK_SHADER_STAGE_COMPUTE_BIT,
-            },
-        };
-        RET(ff_vk_shader_add_descriptor_set(vkctx, shd, desc, 1, 0, 0));
-    }
+    desc = (FFVulkanDescriptorSetBinding []) {
+        {
+            .name       = "planes0",
+            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .mem_layout = ff_vk_shader_rep_fmt(vkctx->frames->sw_format, FF_VK_REP_NATIVE),
+            .dimensions = 2,
+            .elems      = 3,
+            .stages     = VK_SHADER_STAGE_COMPUTE_BIT,
+        },
+        {
+            .name       = "planes1",
+            .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .mem_layout = ff_vk_shader_rep_fmt(vkctx->frames->sw_format, FF_VK_REP_NATIVE),
+            .dimensions = 2,
+            .elems      = 3,
+            .stages     = VK_SHADER_STAGE_COMPUTE_BIT,
+        },
+    };
+    RET(ff_vk_shader_add_descriptor_set(vkctx, shd, desc, num_desc, 0, 0));
 
     ff_vk_shader_add_push_const(shd, 0, push_size, VK_SHADER_STAGE_COMPUTE_BIT);
     av_bprintf(&shd->src, "#define PB_UNALIGNED\n"                   );
@@ -92,6 +98,38 @@ fail:
     return err;
 }
 
+static int init_frame_pool(AVCodecContext *avctx, enum AVPixelFormat sw_format)
+{
+    int err = 0;
+    VC2EncContext *s = avctx->priv_data;
+    AVHWFramesContext *frames_ctx;
+    AVVulkanFramesContext *vk_frames;
+
+    s->intermediate_frames_ref = av_hwframe_ctx_alloc(s->vkctx.device_ref);
+    if (!s->intermediate_frames_ref)
+        return AVERROR(ENOMEM);
+
+    frames_ctx = (AVHWFramesContext *)s->intermediate_frames_ref->data;
+    frames_ctx->format    = AV_PIX_FMT_VULKAN;
+    frames_ctx->sw_format = sw_format;
+    frames_ctx->width     = FFALIGN(s->vkctx.frames->width, 32);
+    frames_ctx->height    = FFALIGN(s->vkctx.frames->height, 32);
+
+    vk_frames = frames_ctx->hwctx;
+    vk_frames->tiling    = VK_IMAGE_TILING_OPTIMAL;
+    vk_frames->usage     = VK_IMAGE_USAGE_STORAGE_BIT;
+    vk_frames->img_flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+
+    err = av_hwframe_ctx_init(s->intermediate_frames_ref);
+    if (err < 0) {
+        av_log(avctx, AV_LOG_ERROR, "Unable to initialize frame pool with format %s: %s\n",
+               av_get_pix_fmt_name(sw_format), av_err2str(err));
+        av_buffer_unref(&s->intermediate_frames_ref);
+    }
+
+    return err;
+}
+
 static int init_vulkan(AVCodecContext *avctx)
 {
     VC2EncContext *s = avctx->priv_data;
@@ -103,7 +141,7 @@ static int init_vulkan(AVCodecContext *avctx)
     VC2EncAuxData* ad = NULL;
     Plane *p;
     VC2DwtPlane vk_plane;
-    int i, level, ret;
+    int i, level, err = 0;
     uint32_t subgroup_size = vkctx->subgroup_props.maxSubgroupSize;
 
     /* Initialize spirv compiler */
@@ -118,11 +156,12 @@ static int init_vulkan(AVCodecContext *avctx)
     /* Allocate coefficient buffer for each plane */
     p = &s->plane[0];
     s->buf_plane_size = p->coef_stride*p->dwt_height*sizeof(dwtcoef);
-    ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &coef_buf,
-                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT, NULL,
-                                  s->buf_plane_size * 3,
-                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    RET(ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &coef_buf,
+                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                NULL,
+                                s->buf_plane_size * 3,
+                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT));
     vk_buf = (FFVkBuffer*)coef_buf->data;
     s->plane_buf = vk_buf->buf;
 
@@ -135,9 +174,6 @@ static int init_vulkan(AVCodecContext *avctx)
         memcpy(&s->calc_consts.planes[i], &vk_plane, sizeof(vk_plane));
         memcpy(&s->dwt_consts.planes[i], &vk_plane, sizeof(vk_plane));
         memcpy(&s->enc_consts.planes[i], &vk_plane, sizeof(vk_plane));
-        s->enc_consts.p[i] = vk_buf->address + s->buf_plane_size * i;
-        s->calc_consts.p[i] = vk_buf->address + s->buf_plane_size * i;
-        s->dwt_consts.pbuf[i] = vk_buf->address + s->buf_plane_size * i;
     }
 
     /* Initialize Haar push data */
@@ -157,11 +193,12 @@ static int init_vulkan(AVCodecContext *avctx)
     s->enc_consts.num_y = s->num_y;
 
     /* Create buffer for encoder auxilary data. */
-    ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &dwt_buf,
-                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
-                                  sizeof(VC2EncAuxData),
-                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    RET(ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &dwt_buf,
+                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                NULL,
+                                sizeof(VC2EncAuxData),
+                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT));
     vk_buf = (FFVkBuffer*)dwt_buf->data;
     s->calc_consts.luts = vk_buf->address;
     s->enc_consts.luts = vk_buf->address;
@@ -178,11 +215,12 @@ static int init_vulkan(AVCodecContext *avctx)
     memcpy(ad->ff_dirac_qscale_tab, ff_dirac_qscale_tab, sizeof(ff_dirac_qscale_tab));
 
     /* Create buffer for slice arguments */
-    ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &dwt_buf,
-                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
-                                  sizeof(VC2EncSliceArgs) * s->num_x * s->num_y,
-                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    RET(ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &dwt_buf,
+                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                NULL,
+                                sizeof(VC2EncSliceArgs) * s->num_x * s->num_y,
+                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT));
     vk_buf = (FFVkBuffer*)dwt_buf->data;
     s->slice_buf = vk_buf->buf;
     s->vk_slice_args = (VC2EncSliceArgs*)vk_buf->mapped_mem;
@@ -191,40 +229,46 @@ static int init_vulkan(AVCodecContext *avctx)
 
     s->haar_subgroup = 0;
 
+    /* Initialize intermediate frame pool. */
+    RET(init_frame_pool(avctx, AV_PIX_FMT_GRAY8));
+
     /* Initialize encoding pipelines */
     init_vulkan_pipeline(s, spv, &s->dwt_upload_shd, sizeof(VC2DwtPushData),
-                         8, 8, 1, "dwt_upload_pl", ff_source_vc2_dwt_upload_comp, 1);
+                         8, 8, 1, "dwt_upload_pl", ff_source_vc2_dwt_upload_comp, 2);
     init_vulkan_pipeline(s, spv, &s->slice_shd, sizeof(VC2EncPushData),
-                         SLICE_WORKGROUP_X, 1, 1, "slice_pl", ff_source_vc2_slice_sizes_comp, 0);
+                         SLICE_WORKGROUP_X, 1, 1, "slice_pl", ff_source_vc2_slice_sizes_comp, 1);
     init_vulkan_pipeline(s, spv, &s->enc_shd, sizeof(VC2EncPushData),
-                         SLICE_WORKGROUP_X, 1, 1, "enc_pl", ff_source_vc2_encode_comp, 0);
+                         SLICE_WORKGROUP_X, 1, 1, "enc_pl", ff_source_vc2_encode_comp, 1);
 
     if (s->wavelet_idx == VC2_TRANSFORM_HAAR || s->wavelet_idx == VC2_TRANSFORM_HAAR_S) {
         if (subgroup_size == 32 && s->wavelet_depth < 3) {
             init_vulkan_pipeline(s, spv, &s->dwt_haar_shd, sizeof(VC2DwtPushData),
-                                 64, 1, 1, "dwt_haar_pl", ff_source_vc2_dwt_haar_subgroup_comp, 0);
+                                 64, 1, 1, "dwt_haar_pl", ff_source_vc2_dwt_haar_subgroup_comp, 1);
             s->haar_subgroup = 1;
         } else if (subgroup_size == 64 && s->wavelet_depth < 4) {
             init_vulkan_pipeline(s, spv, &s->dwt_haar_shd, sizeof(VC2DwtPushData),
-                                 64, 1, 1, "dwt_haar_pl", ff_source_vc2_dwt_haar_subgroup_comp, 0);
+                                 64, 1, 1, "dwt_haar_pl", ff_source_vc2_dwt_haar_subgroup_comp, 1);
             s->haar_subgroup = 1;
         } else {
             init_vulkan_pipeline(s, spv, &s->dwt_haar_shd, sizeof(VC2DwtPushData),
-                                 16, 16, 1, "dwt_haar_pl", ff_source_vc2_dwt_haar_comp, 0);
+                                 16, 16, 1, "dwt_haar_pl", ff_source_vc2_dwt_haar_comp, 1);
         }
     } else if (s->wavelet_idx == VC2_TRANSFORM_5_3) {
         init_vulkan_pipeline(s, spv, &s->dwt_hor_shd, sizeof(VC2DwtPushData),
-                             LEGALL_WORKGROUP_X, 1, 1, "dwt_hor_pl", ff_source_vc2_dwt_hor_legall_comp, 0);
+                             LEGALL_WORKGROUP_X, 1, 1, "dwt_hor_pl", ff_source_vc2_dwt_hor_legall_comp, 1);
         init_vulkan_pipeline(s, spv, &s->dwt_ver_shd, sizeof(VC2DwtPushData),
-                             LEGALL_WORKGROUP_X, 1, 1, "dwt_ver_pl", ff_source_vc2_dwt_ver_legall_comp, 0);
+                             LEGALL_WORKGROUP_X, 1, 1, "dwt_ver_pl", ff_source_vc2_dwt_ver_legall_comp, 1);
     }
 
     s->group_x = s->plane[0].dwt_width >> 3;
     s->group_y = s->plane[0].dwt_height >> 3;
-    return ret;
+
+fail:
+    return err;
 }
 
-static void dwt_plane_haar(VC2EncContext *s, FFVkExecContext *exec, VkBufferMemoryBarrier2* buf_bar)
+static void dwt_plane_haar(VC2EncContext *s, FFVkExecContext *exec,
+                          VkImageMemoryBarrier2* img_bar, int nb_img_bar)
 {
     int p, group_x, group_y;
     FFVulkanContext *vkctx = &s->vkctx;
@@ -232,6 +276,9 @@ static void dwt_plane_haar(VC2EncContext *s, FFVkExecContext *exec, VkBufferMemo
 
     s->dwt_consts.level = s->wavelet_depth;
     ff_vk_exec_bind_shader(vkctx, exec, &s->dwt_haar_shd);
+    ff_vk_shader_update_img_array(vkctx, exec, &s->dwt_haar_shd, s->intermediate_frame,
+                                  s->intermediate_views, 0, 0,
+                                  VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE);
 
     /* Haar pass */
     for (p = 0; p < 3; p++) {
@@ -249,15 +296,16 @@ static void dwt_plane_haar(VC2EncContext *s, FFVkExecContext *exec, VkBufferMemo
         vk->CmdDispatch(exec->buf, group_x, group_y, 1);
     }
 
-    /* Wait for Haar dispatches to complete */
+    /* Wait for haar dispatches to complete */
     vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
                                            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                           .pBufferMemoryBarriers = buf_bar,
-                                           .bufferMemoryBarrierCount = 1U,
+                                           .pImageMemoryBarriers = img_bar,
+                                           .imageMemoryBarrierCount = nb_img_bar,
                                        });
 }
 
-static void dwt_plane_legall(VC2EncContext *s, FFVkExecContext *exec, VkBufferMemoryBarrier2* buf_bar)
+static void dwt_plane_legall(VC2EncContext *s, FFVkExecContext *exec,
+                             VkImageMemoryBarrier2* img_bar, int nb_img_bar)
 {
     int i;
     int legall_group_x = (s->plane[0].dwt_height + LEGALL_WORKGROUP_X - 1) >> 6;
@@ -276,8 +324,8 @@ static void dwt_plane_legall(VC2EncContext *s, FFVkExecContext *exec, VkBufferMe
         vk->CmdDispatch(exec->buf, legall_group_x, 1, 3);
         vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
                                                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                               .pBufferMemoryBarriers = buf_bar,
-                                               .bufferMemoryBarrierCount = 1U,
+                                               .pImageMemoryBarriers = img_bar,
+                                               .imageMemoryBarrierCount = nb_img_bar,
                                            });
 
         /* Vertical Haar pass */
@@ -287,99 +335,103 @@ static void dwt_plane_legall(VC2EncContext *s, FFVkExecContext *exec, VkBufferMe
         vk->CmdDispatch(exec->buf, legall_group_y, 1, 3);
         vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
                                                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                               .pBufferMemoryBarriers = buf_bar,
-                                               .bufferMemoryBarrierCount = 1U,
+                                               .pImageMemoryBarriers = img_bar,
+                                               .imageMemoryBarrierCount = nb_img_bar,
                                            });
     }
 }
 
-static void dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
+static int dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
 {
-    int group_x = s->group_x, group_y = s->group_y;
+    int err = 0, nb_img_bar = 0;
+    int num_slice_groups = (s->num_x*s->num_y + SLICE_WORKGROUP_X - 1) >> 7;
     FFVulkanContext *vkctx = &s->vkctx;
     FFVulkanFunctions *vk = &vkctx->vkfn;
-    uint32_t num_slice_groups = (s->num_x*s->num_y + SLICE_WORKGROUP_X - 1) >> 7;
-    VkBufferMemoryBarrier2 buf_bar;
-    VkBufferMemoryBarrier2 slice_buf_bar;
     VkImageView views[AV_NUM_DATA_POINTERS];
     VkImageMemoryBarrier2 img_bar[AV_NUM_DATA_POINTERS];
-    int nb_img_bar = 0;
 
-    buf_bar = (VkBufferMemoryBarrier2) {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT,
-        .dstAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .buffer = s->plane_buf,
-        .size = s->buf_plane_size * 3,
-        .offset = 0,
-    };
-
-    ff_vk_exec_add_dep_frame(vkctx, exec, frame,
-                             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
-    ff_vk_create_imageviews(vkctx, exec, views, frame, FF_VK_REP_UINT);
+    /* Generate barriers and image views for frame images. */
+    RET(ff_vk_exec_add_dep_frame(vkctx, exec, frame,
+                                 VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT));
+    RET(ff_vk_create_imageviews(vkctx, exec, views, frame, FF_VK_REP_UINT));
     ff_vk_frame_barrier(vkctx, exec, frame, img_bar, &nb_img_bar,
                         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                         VK_ACCESS_SHADER_READ_BIT,
                         VK_IMAGE_LAYOUT_GENERAL,
                         VK_QUEUE_FAMILY_IGNORED);
+
+    /* Submit the image barriers. */
+    vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
+                                           .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                           .pImageMemoryBarriers = img_bar,
+                                           .imageMemoryBarrierCount = nb_img_bar,
+                                       });
+    nb_img_bar = 0;
+
+    /* Create a temporaty frame */
+    s->intermediate_frame = av_frame_alloc();
+    if (!s->intermediate_frame)
+        return AVERROR(ENOMEM);
+
+    RET(av_hwframe_get_buffer(s->intermediate_frames_ref,
+                              s->intermediate_frame, 0));
+    RET(ff_vk_exec_add_dep_frame(vkctx, exec, s->intermediate_frame,
+                                 VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT));
+    RET(ff_vk_create_imageviews(vkctx, exec, s->intermediate_views, s->intermediate_frame, FF_VK_REP_UINT));
+    ff_vk_frame_barrier(vkctx, exec, s->intermediate_frame, img_bar, &nb_img_bar,
+                        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_SHADER_READ_BIT,
+                        VK_IMAGE_LAYOUT_GENERAL,
+                        VK_QUEUE_FAMILY_IGNORED);
+
+    /* Submit the image barriers. */
     vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
                                            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                                            .pImageMemoryBarriers = img_bar,
                                            .imageMemoryBarrierCount = nb_img_bar,
                                        });
 
+    /* Bind images to the shader. */
     ff_vk_shader_update_img_array(vkctx, exec, &s->dwt_upload_shd, frame, views, 0, 0,
-                                      VK_IMAGE_LAYOUT_GENERAL,
-                                      VK_NULL_HANDLE);
+                                  VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE);
+    ff_vk_shader_update_img_array(vkctx, exec, &s->dwt_upload_shd, s->intermediate_frame,
+                                  s->intermediate_views, 0, 1,
+                                  VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE);
 
     /* Upload coefficients from planes to the buffer. */
     s->dwt_consts.diff_offset = s->diff_offset;
     ff_vk_exec_bind_shader(vkctx, exec, &s->dwt_upload_shd);
     ff_vk_shader_update_push_const(vkctx, exec, &s->dwt_upload_shd, VK_SHADER_STAGE_COMPUTE_BIT,
                                    0, sizeof(VC2DwtPushData), &s->dwt_consts);
-    vk->CmdDispatch(exec->buf, group_x, group_y, 3);
+    vk->CmdDispatch(exec->buf, s->group_x, s->group_y, 3);
     vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
-                                           .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                           .pBufferMemoryBarriers = &buf_bar,
-                                           .bufferMemoryBarrierCount = 1U,
-                                       });
+                                            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                            .pImageMemoryBarriers = img_bar,
+                                            .imageMemoryBarrierCount = nb_img_bar,
+                                        });
 
-    /* Perform Haar wavelet trasform */
+    /* Perform wavelet trasform. */
     if (s->wavelet_idx == VC2_TRANSFORM_HAAR || s->wavelet_idx == VC2_TRANSFORM_HAAR_S) {
-        dwt_plane_haar(s, exec, &buf_bar);
+        dwt_plane_haar(s, exec, img_bar, nb_img_bar);
     } else if (s->wavelet_idx == VC2_TRANSFORM_5_3) {
-        dwt_plane_legall(s, exec, &buf_bar);
+        dwt_plane_legall(s, exec, img_bar, nb_img_bar);
     }
 
     /* Calculate slice sizes. */
     ff_vk_exec_bind_shader(vkctx, exec, &s->slice_shd);
+    ff_vk_shader_update_img_array(vkctx, exec, &s->slice_shd, s->intermediate_frame,
+                                  s->intermediate_views, 0, 0,
+                                  VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE);
     ff_vk_shader_update_push_const(vkctx, exec, &s->slice_shd, VK_SHADER_STAGE_COMPUTE_BIT,
                                    0, sizeof(VC2EncSliceCalcPushData), &s->calc_consts);
     vk->CmdDispatch(exec->buf, num_slice_groups, 1, 1);
 
-    slice_buf_bar = (VkBufferMemoryBarrier2) {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        .srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .buffer = s->slice_buf,
-        .size = sizeof(VC2EncSliceArgs) * s->num_x * s->num_y,
-        .offset = 0,
-    };
-    vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
-                                           .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                                           .pBufferMemoryBarriers = &slice_buf_bar,
-                                           .bufferMemoryBarrierCount = 1U,
-                                       });
+fail:
+    return err;
 }
 
 static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
@@ -389,10 +441,34 @@ static void vulkan_encode_slices(VC2EncContext *s, FFVkExecContext *exec)
     FFVulkanFunctions *vk = &vkctx->vkfn;
     int skip = 0;
 
+    VkBufferMemoryBarrier2 slice_buf_bar = (VkBufferMemoryBarrier2) {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = s->slice_buf,
+        .size = sizeof(VC2EncSliceArgs) * s->num_x * s->num_y,
+        .offset = 0,
+    };
+
     flush_put_bits(&s->pb);
     s->enc_consts.pb += put_bytes_output(&s->pb);
 
+    /* Wait for slice sizes to be written. */
+    vk->CmdPipelineBarrier2(exec->buf, &(VkDependencyInfo) {
+                                           .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                           .pBufferMemoryBarriers = &slice_buf_bar,
+                                           .bufferMemoryBarrierCount = 1U,
+                                       });
+
+    /* Bind encoding shader. */
     ff_vk_exec_bind_shader(vkctx, exec, &s->enc_shd);
+    ff_vk_shader_update_img_array(vkctx, exec, &s->enc_shd, s->intermediate_frame,
+                                  s->intermediate_views, 0, 0,
+                                  VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE);
     ff_vk_shader_update_push_const(vkctx, exec, &s->enc_shd, VK_SHADER_STAGE_COMPUTE_BIT,
                                    0, sizeof(VC2EncPushData), &s->enc_consts);
 
@@ -424,7 +500,7 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
 
     ff_vk_exec_start(vkctx, exec);
 
-    /* Perform Haar DWT pass on the inpute frame. */
+    /* Perform wavelet pass on the inpute frame. */
     dwt_plane(s, exec, (AVFrame*)frame);
 
     /* Allocate a buffer that can fit at all all 3 planes of data */
@@ -548,6 +624,8 @@ static av_cold int vc2_encode_end(AVCodecContext *avctx)
         ff_vc2enc_free_transforms(&s->transform_args[i].t);
         av_freep(&s->plane[i].coef_buf);
     }
+
+    av_buffer_unref(&s->intermediate_frames_ref);
 
     return 0;
 }
