@@ -3,6 +3,13 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_debug_printf : require
 
+layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
+    int coef_buf[];
+};
+layout(scalar, buffer_reference, buffer_reference_align = 1) buffer PlaneBuf {
+    uint8_t data[];
+};
+
 struct Plane {
     ivec2 dim;
     ivec2 dwt_dim;
@@ -13,6 +20,7 @@ layout(push_constant, scalar) uniform ComputeInfo {
     int diff_offset;
     int level;
     Plane planes[3];
+    DwtCoef pbuf[3];
 };
 
 void main()
@@ -20,7 +28,13 @@ void main()
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
     uint plane_idx = gl_GlobalInvocationID.z;
     ivec2 coord_i = clamp(coord, ivec2(0), planes[plane_idx].dim);
-    uint texel = imageLoad(planes0[plane_idx], coord_i).x;
+    uint texel = imageLoad(planes1[plane_idx], coord_i).x;
     int result = int(texel - diff_offset);
-    imageStore(planes1[plane_idx], coord_i, ivec4(result));
+    imageStore(planes0[plane_idx], coord, ivec4(result));
+    ivec2 work_area = planes[plane_idx].dwt_dim;
+    if (any(greaterThanEqual(coord, work_area)))
+        return;
+    int stride = align(planes[plane_idx].dwt_dim.x, 32);
+    uint coef_idx = coord.y * stride + coord.x;
+    pbuf[plane_idx].coef_buf[coef_idx] = result;
 }

@@ -68,7 +68,7 @@ static int init_vulkan_pipeline(VC2EncContext* s, FFVkSPIRVCompiler *spv,
         {
             .name       = "planes0",
             .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .mem_layout = ff_vk_shader_rep_fmt(vkctx->frames->sw_format, FF_VK_REP_NATIVE),
+            .mem_layout = ff_vk_shader_rep_fmt(vkctx->frames->sw_format, FF_VK_REP_INT),
             .dimensions = 2,
             .elems      = 3,
             .stages     = VK_SHADER_STAGE_COMPUTE_BIT,
@@ -76,7 +76,7 @@ static int init_vulkan_pipeline(VC2EncContext* s, FFVkSPIRVCompiler *spv,
         {
             .name       = "planes1",
             .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .mem_layout = ff_vk_shader_rep_fmt(vkctx->frames->sw_format, FF_VK_REP_NATIVE),
+            .mem_layout = ff_vk_shader_rep_fmt(vkctx->frames->sw_format, FF_VK_REP_INT),
             .dimensions = 2,
             .elems      = 3,
             .stages     = VK_SHADER_STAGE_COMPUTE_BIT,
@@ -174,6 +174,9 @@ static int init_vulkan(AVCodecContext *avctx)
         memcpy(&s->calc_consts.planes[i], &vk_plane, sizeof(vk_plane));
         memcpy(&s->dwt_consts.planes[i], &vk_plane, sizeof(vk_plane));
         memcpy(&s->enc_consts.planes[i], &vk_plane, sizeof(vk_plane));
+        s->enc_consts.p[i] = vk_buf->address + s->buf_plane_size * i;
+        s->calc_consts.p[i] = vk_buf->address + s->buf_plane_size * i;
+        s->dwt_consts.pbuf[i] = vk_buf->address + s->buf_plane_size * i;
     }
 
     /* Initialize Haar push data */
@@ -230,7 +233,7 @@ static int init_vulkan(AVCodecContext *avctx)
     s->haar_subgroup = 0;
 
     /* Initialize intermediate frame pool. */
-    RET(init_frame_pool(avctx, AV_PIX_FMT_GRAY8));
+    RET(init_frame_pool(avctx, vkctx->frames->sw_format));
 
     /* Initialize encoding pipelines */
     init_vulkan_pipeline(s, spv, &s->dwt_upload_shd, sizeof(VC2DwtPushData),
@@ -396,10 +399,10 @@ static int dwt_plane(VC2EncContext *s, FFVkExecContext *exec, AVFrame *frame)
                                        });
 
     /* Bind images to the shader. */
-    ff_vk_shader_update_img_array(vkctx, exec, &s->dwt_upload_shd, frame, views, 0, 0,
-                                  VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE);
     ff_vk_shader_update_img_array(vkctx, exec, &s->dwt_upload_shd, s->intermediate_frame,
-                                  s->intermediate_views, 0, 1,
+                                  s->intermediate_views, 0, 0,
+                                  VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE);
+    ff_vk_shader_update_img_array(vkctx, exec, &s->dwt_upload_shd, frame, views, 0, 1,
                                   VK_IMAGE_LAYOUT_GENERAL, VK_NULL_HANDLE);
 
     /* Upload coefficients from planes to the buffer. */
@@ -511,11 +514,11 @@ static int encode_frame(VC2EncContext *s, AVPacket *avpkt, const AVFrame *frame,
     if (field < 2) {
         ret = ff_vk_get_pooled_buffer(vkctx, &s->dwt_buf_pool, &avpkt_buf,
                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
+                                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, NULL,
                                       max_frame_bytes << s->interlaced,
                                       VK_MEMORY_PROPERTY_HOST_CACHED_BIT |
-                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         avpkt->buf = avpkt_buf;
         buf_vk = (FFVkBuffer *)avpkt_buf->data;
         avpkt->data = buf_vk->mapped_mem;

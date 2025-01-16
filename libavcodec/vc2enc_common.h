@@ -141,6 +141,7 @@ typedef struct VC2DwtPushData {
     };
     int level;
     VC2DwtPlane planes[3];
+    VkDeviceAddress pbuf[3];
 } VC2DwtPushData;
 
 typedef struct VC2EncAuxData {
@@ -149,6 +150,7 @@ typedef struct VC2EncAuxData {
 } VC2EncAuxData;
 
 typedef struct VC2EncPushData {
+    VkDeviceAddress p[3];
     VkDeviceAddress pb;
     VkDeviceAddress luts;
     VkDeviceAddress slice;
@@ -168,6 +170,7 @@ typedef struct VC2EncSliceArgs {
 } VC2EncSliceArgs;
 
 typedef struct VC2EncSliceCalcPushData {
+    VkDeviceAddress p[3];
     VkDeviceAddress luts;
     VkDeviceAddress slice;
     int num_x;

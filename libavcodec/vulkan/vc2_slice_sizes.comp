@@ -20,6 +20,9 @@ struct Plane {
 layout(std430, buffer_reference) buffer SliceArgBuf {
     SliceArgs args[];
 };
+layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
+    int coef_buf[];
+};
 
 layout(scalar, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
     int quant[5][4];
@@ -27,6 +30,7 @@ layout(scalar, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
 };
 
 layout(push_constant, scalar) uniform ComputeInfo {
+    DwtCoef plane_dat[3];
     QuantLuts luts;
     SliceArgBuf slice;
     ivec2 num_slices;
@@ -111,8 +115,8 @@ int count_hq_slice(int quant_index)
                     {
                         int sx = subband_coord(x, xh, level);
                         int sy = subband_coord(y, yh, level);
-                        int coef = int(imageLoad(planes0[p], ivec2(sx, sy)).x);
-                        //int coef = plane_dat[p].coef_buf[sy * stride + sx];
+                        //int coef = imageLoad(planes0[p], ivec2(sx, sy)).x;
+                        int coef = plane_dat[p].coef_buf[sy * stride + sx];
                         uint c_abs = uint(abs(coef));
                         c_abs = (c_abs << 2) / qfactor;
                         bits += count_vc2_ue_uint(c_abs);
