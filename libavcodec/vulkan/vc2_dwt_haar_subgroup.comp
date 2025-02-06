@@ -8,7 +8,7 @@
 layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
     int coef_buf[];
 };
- 
+
 struct Plane {
     ivec2 dim;
     ivec2 dwt_dim;

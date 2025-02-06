@@ -8,17 +8,11 @@ struct Plane {
     ivec2 dwt_dim;
 };
 
-
-layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
-    int coef_buf[];
-};
-
 layout(push_constant, scalar) uniform ComputeInfo {
     int s;
     int plane_idx;
     int wavelet_depth;
     Plane planes[3];
-    DwtCoef pbuf[3];
 };
 
 shared int local_coef[LOCAL_X];
@@ -31,8 +25,7 @@ void main()
         return;
 
     int index = dwt_dim.x * coord.y + coord.x;
-    int value = pbuf[plane_idx].coef_buf[index];
-    //int value = imageLoad(planes0[plane_idx], coord).x;
+    int value = imageLoad(planes0[plane_idx], coord).x;
 
     /* Perform Haar wavelet on the 16x16 local workgroup with shared memory */
     for (int i = 0; i < wavelet_depth; i++)
@@ -73,6 +66,5 @@ void main()
     }
 
     /* Store value */
-    pbuf[plane_idx].coef_buf[index] = value;
-    //imageStore(planes0[plane_idx], coord, ivec4(value));
+    imageStore(planes0[plane_idx], coord, ivec4(value));
 }

@@ -1,10 +1,6 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_buffer_reference : require
 
-layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
-    int coef_buf[];
-};
-
 struct Plane {
     ivec2 dim;
     ivec2 dwt_dim;
@@ -15,8 +11,19 @@ layout(push_constant, scalar) uniform ComputeInfo {
     int diff_offset;
     int level;
     Plane planes[3];
-    DwtCoef pbuf[3];
 };
+
+int image_load(int coord_y)
+{
+    int coord_x = int(gl_GlobalInvocationID.x);
+    return imageLoad(planes0[gl_GlobalInvocationID.z], ivec2(coord_x, coord_y)).x;
+}
+
+void image_store(int coord_y, int value)
+{
+    int coord_x = int(gl_GlobalInvocationID.x);
+    imageStore(planes0[gl_GlobalInvocationID.z], ivec2(coord_x, coord_y), ivec4(value));
+}
 
 void main()
 {
@@ -27,23 +34,29 @@ void main()
     if (coord_x >= work_area.x || (coord_x & (dist - 1)) != 0)
         return;
 
-    DwtCoef buf = pbuf[plane_idx];
-    ivec2 dwt_area = work_area >> 1;
-    int stride = align(planes[plane_idx].dwt_dim.x, 32);
-
     // Lifting stage 2
     for (int y = dist; y < work_area.y - 2 * dist; y += 2 * dist) {
-        buf.coef_buf[stride * y + coord_x] -= (buf.coef_buf[stride * (y - dist) + coord_x] +
-                                               buf.coef_buf[stride * (y + dist) + coord_x] + 1) >> 1;
+        int lhs = image_load(y - dist);
+        int rhs = image_load(y + dist);
+        int value = image_load(y);
+        value -= (lhs + rhs + 1) >> 1;
+        image_store(y, value);
     }
-    buf.coef_buf[stride * (work_area.y - dist) + coord_x] -= (2 * buf.coef_buf[stride * (work_area.y - 2 * dist) + coord_x] + 1) >> 1;
+    int lhs = image_load(work_area.y - 2 * dist);
+    int value = image_load(work_area.y - dist);
+    value -= (2 * lhs + 1) >> 1;
+    image_store(work_area.y - dist, value);
 
     // Lifting stage 1
-    buf.coef_buf[coord_x] += (2 * buf.coef_buf[stride * dist + coord_x] + 2) >> 2;
-    for (int y = 2 * dist; y < work_area.y - 2 * dist; y += 2 * dist) {
-        buf.coef_buf[stride * y + coord_x] += (buf.coef_buf[stride * (y + dist) + coord_x] +
-                                               buf.coef_buf[stride * (y - dist) + coord_x] + 2) >> 2;
+    lhs = image_load(dist);
+    value = image_load(0);
+    value += (2 * lhs + 2) >> 2;
+    image_store(0, value);
+    for (int y = 2 * dist; y <= work_area.y - 2 * dist; y += 2 * dist) {
+        int lhs = image_load(y + dist);
+        int rhs = image_load(y - dist);
+        int value = image_load(y);
+        value += (lhs + rhs + 2) >> 2;
+        image_store(y, value);
     }
-    buf.coef_buf[stride * (work_area.y - 2 * dist) + coord_x] += (buf.coef_buf[stride * (work_area.y - 3 * dist) + coord_x] +
-                                                                  buf.coef_buf[stride * (work_area.y - dist) + coord_x] + 2) >> 2;
 }

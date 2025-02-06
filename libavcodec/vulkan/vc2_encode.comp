@@ -27,12 +27,8 @@ layout(scalar, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
     int quant[5][4];
     int ff_dirac_qscale_tab[116];
 };
-layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
-    int coef_buf[];
-};
 
 layout(push_constant, scalar) uniform ComputeInfo {
-    DwtCoef plane_dat[3];
     BitBuf bytestream;
     QuantLuts luts;
     SliceArgBuf slice;
@@ -146,8 +142,7 @@ void main()
                     {
                         int sx = subband_coord(x, xh, level);
                         int sy = subband_coord(y, yh, level);
-                        //int coef = imageLoad(planes0[p], ivec2(sx, sy)).x;
-                        int coef = plane_dat[p].coef_buf[sy * stride + sx];
+                        int coef = imageLoad(planes0[p], ivec2(sx, sy)).x;
                         uint c_abs = uint(abs(coef));
                         c_abs = (c_abs << 2) / qfactor;
                         put_vc2_ue_uint(pb, c_abs);

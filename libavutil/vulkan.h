@@ -578,6 +578,13 @@ void ff_vk_shader_update_push_const(FFVulkanContext *s, FFVkExecContext *e,
                                     FFVulkanShader *shd,
                                     VkShaderStageFlagBits stage,
                                     int offset, size_t size, void *src);
+/**
+ * Sets an image descriptor for specified shader and binding.
+ */
+int ff_vk_set_descriptor_image(FFVulkanContext *s, FFVulkanShader *shd,
+                               FFVkExecContext *e, int set, int bind, int offs,
+                               VkImageView view, VkImageLayout layout,
+                               VkSampler sampler);
 
 /**
  * Update a descriptor in a buffer with a buffer.

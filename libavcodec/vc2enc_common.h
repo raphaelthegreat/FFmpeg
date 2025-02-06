@@ -141,7 +141,6 @@ typedef struct VC2DwtPushData {
     };
     int level;
     VC2DwtPlane planes[3];
-    VkDeviceAddress pbuf[3];
 } VC2DwtPushData;
 
 typedef struct VC2EncAuxData {
@@ -150,7 +149,6 @@ typedef struct VC2EncAuxData {
 } VC2EncAuxData;
 
 typedef struct VC2EncPushData {
-    VkDeviceAddress p[3];
     VkDeviceAddress pb;
     VkDeviceAddress luts;
     VkDeviceAddress slice;
@@ -170,7 +168,6 @@ typedef struct VC2EncSliceArgs {
 } VC2EncSliceArgs;
 
 typedef struct VC2EncSliceCalcPushData {
-    VkDeviceAddress p[3];
     VkDeviceAddress luts;
     VkDeviceAddress slice;
     int num_x;
@@ -258,14 +255,13 @@ typedef struct VC2EncContext {
     int haar_subgroup;
 
     VkBuffer plane_buf, slice_buf;
-    uint32_t buf_plane_size;
     VC2EncPushData enc_consts;
     VC2DwtPushData dwt_consts;
     VC2EncSliceCalcPushData calc_consts;
 
     /* Intermediate frame pool */
-    AVBufferRef *intermediate_frames_ref;
-    AVFrame *intermediate_frame;
+    AVBufferRef *intermediate_frames_ref[3];
+    AVFrame *intermediate_frame[AV_NUM_DATA_POINTERS];
     VkImageView intermediate_views[AV_NUM_DATA_POINTERS];
 } VC2EncContext;
 
