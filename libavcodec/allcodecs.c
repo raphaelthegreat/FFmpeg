@@ -365,6 +365,7 @@ extern const FFCodec ff_vc1image_decoder;
 extern const FFCodec ff_vc1_mmal_decoder;
 extern const FFCodec ff_vc1_qsv_decoder;
 extern const FFCodec ff_vc1_v4l2m2m_decoder;
+extern const FFCodec ff_vc2_vulkan_encoder;
 extern const FFCodec ff_vc2_encoder;
 extern const FFCodec ff_vcr1_decoder;
 extern const FFCodec ff_vmdvideo_decoder;
