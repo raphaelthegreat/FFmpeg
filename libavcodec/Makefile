@@ -769,6 +769,9 @@ OBJS-$(CONFIG_VC1_MMAL_DECODER)        += mmaldec.o
 OBJS-$(CONFIG_VC1_QSV_DECODER)         += qsvdec.o
 OBJS-$(CONFIG_VC1_V4L2M2M_DECODER)     += v4l2_m2m_dec.o
 OBJS-$(CONFIG_VC2_ENCODER)             += vc2enc.o vc2enc_dwt.o vc2enc_common.o diractab.o
+OBJS-$(CONFIG_VC2_VULKAN_ENCODER)      += vc2enc_vulkan.o vulkan/vc2_encode.o vulkan/vc2_slice_sizes.o \
+                                          vulkan/vc2_dwt_hor_legall.o vulkan/vc2_dwt_ver_legall.o \
+                                          vulkan/vc2_dwt_upload.o vulkan/vc2_dwt_haar.o vulkan/vc2_dwt_haar_subgroup.o 
 OBJS-$(CONFIG_VCR1_DECODER)            += vcr1.o
 OBJS-$(CONFIG_VMDAUDIO_DECODER)        += vmdaudio.o
 OBJS-$(CONFIG_VMDVIDEO_DECODER)        += vmdvideo.o
