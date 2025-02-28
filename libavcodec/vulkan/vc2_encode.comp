@@ -1,0 +1,173 @@
+/*
+ * VC2 codec
+ *
+ * Copyright (c) 2025 raphaelthegreat <geoster3d@gmail.com>
+ *
+ * This file is part of FFmpeg.
+ *
+ * FFmpeg is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * FFmpeg is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with FFmpeg; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ */
+
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_debug_printf : require
+
+#define MAX_DWT_LEVELS (5)
+
+layout(push_constant, scalar) uniform ComputeInfo {
+    u8buf bytestream;
+    ivec2 num_slices;
+    int wavelet_depth;
+    int size_scaler;
+    int prefix_bytes;
+};
+
+void put_vc2_ue_uint(inout PutBitContext pb, uint val)
+{
+    uint64_t pbits = 1;
+    int bits = 1;
+
+    ++val;
+
+    while ((val >> 8) != 0)
+    {
+        pbits |= uint64_t(interleaved_ue_golomb_tab[val & 0xff]) << bits;
+        val >>= 8;
+        bits += 16;
+    }
+
+    pbits |= uint64_t(top_interleaved_ue_golomb_tab[val]) << bits;
+    bits  += golomb_len_tab[val];
+    put_bits63(pb, bits, pbits);
+}
+
+void skip_put_bytes(inout PutBitContext pb, int n)
+{
+    int skip_dwords = n >> 2;
+    while (skip_dwords > 0)
+    {
+        u8vec4buf(pb.buf).v = u8vec4(0xFF);
+        pb.buf += 4;
+        skip_dwords--;
+    }
+    int skip_bits = (n & 3) << 3;
+    pb.bit_buf = (1 << skip_bits) - 1;
+    pb.bit_left = uint8_t(BUF_BITS - skip_bits);
+}
+
+int quants[MAX_DWT_LEVELS][4];
+
+int subband_coord(int index, int h, int lvl)
+{
+    int coord = index;
+    coord <<= 1;
+    coord |= h;
+    coord <<= (wavelet_depth-lvl-1);
+    return coord;
+}
+
+void main()
+{
+    int slice_index = int(gl_GlobalInvocationID.x);
+    int max_index = num_slices.x * num_slices.y;
+    if (slice_index >= max_index)
+        return;
+
+    /* Step 2. Quantize and encode */
+    int pb_start = slice_args[slice_index].pb_start;
+    int workgroup_x = int(gl_WorkGroupSize.x);
+    for (int i = 0, index = workgroup_x - 1; i < gl_WorkGroupID.x; i++) {
+        pb_start += slice_args[index].pb_start + slice_args[index].bytes;
+        index += workgroup_x;
+    }
+    ivec2 slice_coord = ivec2(slice_index % num_slices.x, slice_index / num_slices.x);
+    int slice_bytes_max = slice_args[slice_index].bytes;
+    int quant_index = slice_args[slice_index].quant_idx;
+
+    PutBitContext pb;
+    init_put_bits(pb, OFFBUF(u8buf, bytestream, pb_start), slice_bytes_max);
+
+    for (int level = 0; level < wavelet_depth; level++)
+        for (int orientation = int(level > 0); orientation < 4; orientation++)
+            quants[level][orientation] = max(quant_index - lut_quant[level][orientation], 0);
+
+    /* Write quant index for this slice */
+    put_bits(pb, 8, quant_index);
+
+    /* Luma + 2 Chroma planes */
+    for (int p = 0; p < 3; p++)
+    {
+        int pad_s, pad_c;
+        int bytes_start = int32_t(put_bytes_count(pb));
+
+        /* Save current location and write a zero value */
+        uint64_t write_ptr_start = pb.buf;
+        int bit_left_start = pb.bit_left;
+        put_bits(pb, 8, 0);
+
+        ivec2 dwt_dim = imageSize(coef_buf[p]);
+        for (int level = 0; level < wavelet_depth; level++)
+        {
+            ivec2 band_size = dwt_dim >> (wavelet_depth - level);
+            for (int o = int(level > 0); o < 4; o++)
+            {
+                /* Encode subband */
+                int left = band_size.x * (slice_coord.x) / num_slices.x;
+                int right = band_size.x * (slice_coord.x+1) / num_slices.x;
+                int top = band_size.y * (slice_coord.y) / num_slices.y;
+                int bottom = band_size.y * (slice_coord.y+1) / num_slices.y;
+
+                const int q_idx = quants[level][o];
+                const int qfactor = ff_dirac_qscale_tab[q_idx];
+
+                const int yh = o >> 1;
+                const int xh = o & 1;
+
+                for (int y = top; y < bottom; y++)
+                {
+                    for (int x = left; x < right; x++)
+                    {
+                        int sx = subband_coord(x, xh, level);
+                        int sy = subband_coord(y, yh, level);
+                        int coef = imageLoad(coef_buf[p], ivec2(sx, sy)).x;
+                        uint c_abs = uint(abs(coef));
+                        c_abs = (c_abs << 2) / qfactor;
+                        put_vc2_ue_uint(pb, c_abs);
+                        if (c_abs != 0)
+                            put_bits(pb, 1, int(coef < 0));
+                    }
+                }
+            }
+        }
+        flush_put_bits(pb);
+        int bytes_len = int32_t(put_bytes_count(pb)) - bytes_start - 1;
+        if (p == 2)
+        {
+            int len_diff = slice_bytes_max - int32_t(put_bytes_count(pb));
+            pad_s = align((bytes_len + len_diff), size_scaler)/size_scaler;
+            pad_c = (pad_s*size_scaler) - bytes_len;
+        }
+        else
+        {
+            pad_s = align(bytes_len, size_scaler)/size_scaler;
+            pad_c = (pad_s*size_scaler) - bytes_len;
+        }
+        uint64_t start_ptr = write_ptr_start + ((BUF_BITS - bit_left_start) >> 3);
+        u8buf(start_ptr).v = uint8_t(pad_s);
+        /* vc2-reference uses that padding that decodes to '0' coeffs */
+        skip_put_bytes(pb, pad_c);
+    }
+}

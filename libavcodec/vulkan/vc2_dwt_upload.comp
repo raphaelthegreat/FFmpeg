@@ -1,0 +1,96 @@
+/*
+ * VC2 codec
+ *
+ * Copyright (c) 2025 raphaelthegreat <geoster3d@gmail.com>
+ *
+ * This file is part of FFmpeg.
+ *
+ * FFmpeg is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * FFmpeg is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with FFmpeg; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ */
+
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+
+#define AV_PIX_FMT_XV30 214
+#define AV_PIX_FMT_XV36 216
+#define AV_PIX_FMT_XV48 242
+#define AV_PIX_FMT_P212 222
+#define AV_PIX_FMT_P012 209
+#define AV_PIX_FMT_P210 198
+#define AV_PIX_FMT_P016 169
+#define AV_PIX_FMT_P010 158
+#define AV_PIX_FMT_NV16 101
+#define AV_PIX_FMT_NV12 23
+
+#define Y 0
+#define U 1
+#define V 2
+
+layout(push_constant, scalar) uniform ComputeInfo {
+    int s;
+    int diff_offset;
+    int level;
+};
+
+uvec4 load_plane(uint plane_idx)
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    return imageLoad(src_planes[plane_idx], coord);
+}
+
+void store_plane(uint plane_idx, uint value)
+{
+    int result = int(value - diff_offset);
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    imageStore(coef_buf[plane_idx], coord, ivec4(result));
+}
+
+void main()
+{
+    uvec4 p0 = load_plane(0);
+#if PLANE_FMT == AV_PIX_FMT_XV30
+    store_plane(Y, (p0.x >> 10) & 0x3FF);
+    store_plane(U, p0.x & 0x3FF);
+    store_plane(V, (p0.x >> 20) & 0x3FF);
+#elif PLANE_FMT == AV_PIX_FMT_XV36
+    store_plane(Y, p0.y >> 4);
+    store_plane(U, p0.x >> 4);
+    store_plane(V, p0.z >> 4);
+#elif PLANE_FMT == AV_PIX_FMT_NV12
+    uvec4 p1 = load_plane(1);
+    store_plane(Y, p0.x | p0.y << 8);
+    store_plane(U, p1.x);
+    store_plane(V, p1.y);
+#elif PLANE_FMT == AV_PIX_FMT_NV16
+    uvec4 p1 = load_plane(1);
+    store_plane(Y, p0.x);
+    store_plane(U, p1.x);
+    store_plane(V, p1.y);
+#elif PLANE_FMT == AV_PIX_FMT_P010 || PLANE_FMT == AV_PIX_FMT_P210
+    uvec4 p1 = load_plane(1);
+    store_plane(Y, p0.x >> 6);
+    store_plane(U, p1.x >> 6);
+    store_plane(V, p1.y >> 6);
+#elif PLANE_FMT == AV_PIX_FMT_P012 || PLANE_FMT == AV_PIX_FMT_P212
+    uvec4 p1 = load_plane(1);
+    store_plane(Y, p0.x >> 4);
+    store_plane(U, p1.x >> 4);
+    store_plane(V, p1.y >> 4);
+#else
+    store_plane(Y, p0.x);
+    store_plane(U, load_plane(1).x);
+    store_plane(V, load_plane(2).x);
+#endif
+}

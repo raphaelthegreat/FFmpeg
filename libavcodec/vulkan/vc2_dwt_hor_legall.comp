@@ -1,0 +1,82 @@
+/*
+ * VC2 codec
+ *
+ * Copyright (c) 2025 raphaelthegreat <geoster3d@gmail.com>
+ *
+ * This file is part of FFmpeg.
+ *
+ * FFmpeg is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * FFmpeg is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with FFmpeg; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ */
+
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_buffer_reference : require
+
+layout(push_constant, scalar) uniform ComputeInfo {
+    int s;
+    int diff_offset;
+    int level;
+};
+
+int image_load(int coord_x)
+{
+    int coord_y = int(gl_GlobalInvocationID.x);
+    return imageLoad(coef_buf[gl_GlobalInvocationID.z], ivec2(coord_x, coord_y)).x;
+}
+
+void image_store(int coord_x, int value)
+{
+    int coord_y = int(gl_GlobalInvocationID.x);
+    imageStore(coef_buf[gl_GlobalInvocationID.z], ivec2(coord_x, coord_y), ivec4(value));
+}
+
+void main()
+{
+    int coord_y = int(gl_GlobalInvocationID.x);
+    uint plane_idx = gl_GlobalInvocationID.z;
+    ivec2 work_area = imageSize(coef_buf[plane_idx]);
+    int dist = 1 << level;
+    if (coord_y >= work_area.y || (coord_y & (dist - 1)) != 0)
+        return;
+
+    // Shift in one bit that is used for additional precision
+    for (int x = 0; x < work_area.x; x += dist)
+        image_store(x, image_load(x) << 1);
+
+    // Lifting stage 2
+    for (int x = 0; x < work_area.x - 2 * dist; x += 2 * dist) {
+        int lhs = image_load(x);
+        int rhs = image_load(x + 2 * dist);
+        int value = image_load(x + dist);
+        value -= (lhs + rhs + 1) >> 1;
+        image_store(x + dist, value);
+    }
+    int lhs = image_load(work_area.x - 2 * dist);
+    int value = image_load(work_area.x - dist);
+    value -= (2 * lhs + 1) >> 1;
+    image_store(work_area.x - dist, value);
+
+    // Lifting stage 1
+    lhs = image_load(dist);
+    value = image_load(0);
+    value += (2 * lhs + 2) >> 2;
+    image_store(0, value);
+    for (int x = 2 * dist; x <= work_area.x - 2 * dist; x += 2 * dist) {
+        int lhs = image_load(x - dist);
+        int rhs = image_load(x + dist);
+        int value = image_load(x);
+        value += (lhs + rhs + 2) >> 2;
+        image_store(x, value);
+    }
+}

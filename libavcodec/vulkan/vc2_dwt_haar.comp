@@ -1,0 +1,82 @@
+/*
+ * VC2 codec
+ *
+ * Copyright (c) 2025 raphaelthegreat <geoster3d@gmail.com>
+ *
+ * This file is part of FFmpeg.
+ *
+ * FFmpeg is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * FFmpeg is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with FFmpeg; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ */
+
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_buffer_reference : require
+
+#define LOCAL_X 1024
+
+layout(push_constant, scalar) uniform ComputeInfo {
+    int s;
+    int plane_idx;
+    int wavelet_depth;
+};
+
+shared int local_coef[LOCAL_X];
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dwt_dim = imageSize(coef_buf[plane_idx]);
+    int value = imageLoad(coef_buf[plane_idx], coord).x;
+
+    /* Perform Haar wavelet on the 32x32 local workgroup with shared memory */
+    for (int i = 0; i < wavelet_depth; i++)
+    {
+        ivec2 mask = ivec2((1 << i) - 1);
+        if (any(notEqual(coord & mask, ivec2(0))))
+            break;
+
+        /* Offset between valid hor pixels for each level, +1, +2, +4 etc */
+        int dist = (1 << i);
+
+        local_coef[gl_LocalInvocationIndex] = value;
+        barrier();
+
+        /* Horizontal haar wavelet */
+        uint other_id = gl_LocalInvocationIndex ^ dist;
+        int other = local_coef[other_id];
+        int a = gl_LocalInvocationIndex < other_id ? value : other;
+        int b = gl_LocalInvocationIndex < other_id ? other : value;
+        int dst_b = (b - a) * (1 << s);
+        int dst_a = a * (1 << s) + ((dst_b + 1) >> 1);
+        value = gl_LocalInvocationIndex < other_id ? dst_a : dst_b;
+
+        /* Offset between valid ver pixels for each level, +1, +2, +4 etc */
+        dist <<= 5;
+
+        local_coef[gl_LocalInvocationIndex] = value;
+        barrier();
+
+        /* Vertical haar wavelet */
+        other_id = gl_LocalInvocationIndex ^ dist;
+        other = local_coef[other_id];
+        a = gl_LocalInvocationIndex < other_id ? value : other;
+        b = gl_LocalInvocationIndex < other_id ? other : value;
+        dst_b = b - a;
+        dst_a = a + ((dst_b + 1) >> 1);
+        value = gl_LocalInvocationIndex < other_id ? dst_a : dst_b;
+    }
+
+    /* Store value */
+    imageStore(coef_buf[plane_idx], coord, ivec4(value));
+}
