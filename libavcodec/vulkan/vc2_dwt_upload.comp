@@ -1,0 +1,29 @@
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_buffer_reference : require
+
+layout(scalar, buffer_reference, buffer_reference_align = 1) buffer PlaneBuf {
+    uint8_t data[];
+};
+
+struct Plane {
+    ivec2 dim;
+    ivec2 dwt_dim;
+};
+
+layout(push_constant, scalar) uniform ComputeInfo {
+    int s;
+    int diff_offset;
+    int level;
+    Plane planes[3];
+};
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    uint plane_idx = gl_GlobalInvocationID.z;
+    ivec2 coord_i = clamp(coord, ivec2(0), planes[plane_idx].dim);
+    uint texel = imageLoad(planes1[plane_idx], coord_i).x;
+    int result = int(texel - diff_offset);
+    imageStore(planes0[plane_idx], coord, ivec4(result));
+}

@@ -1,0 +1,89 @@
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_EXT_buffer_reference : require
+
+#define TILE_DIM 8
+
+layout(scalar, buffer_reference, buffer_reference_align = 4) buffer DwtCoef {
+    int coef_buf[];
+};
+
+struct Plane {
+    ivec2 dim;
+    ivec2 dwt_dim;
+};
+
+layout(push_constant, scalar) uniform ComputeInfo {
+    int s;
+    int plane_idx;
+    int wavelet_depth;
+    Plane planes[3];
+    DwtCoef pbuf[3];
+};
+
+int dwt_haar_subgroup(int value, int i)
+{
+    /* Offset between valid hor pixels for each level, +1, +2, +4 etc */
+    int dist = (1 << i);
+
+    /* Horizontal haar wavelet */
+    uint other_sub_id = gl_SubgroupInvocationID ^ dist;
+    int other = subgroupShuffle(value, other_sub_id);
+    int a = gl_SubgroupInvocationID < other_sub_id ? value : other;
+    int b = gl_SubgroupInvocationID < other_sub_id ? other : value;
+    int dst_b = (b - a) * (1 << s);
+    int dst_a = a * (1 << s) + ((dst_b + 1) >> 1);
+    value = gl_SubgroupInvocationID < other_sub_id ? dst_a : dst_b;
+
+    /* Offset between valid ver pixels for each level, +1, +2, +4 etc */
+    dist <<= 3;
+
+    /* Vertical haar wavelet */
+    other_sub_id = gl_SubgroupInvocationID ^ dist;
+    other = subgroupShuffle(value, other_sub_id);
+    a = gl_SubgroupInvocationID < other_sub_id ? value : other;
+    b = gl_SubgroupInvocationID < other_sub_id ? other : value;
+    dst_b = b - a;
+    dst_a = a + ((dst_b + 1) >> 1);
+    return gl_SubgroupInvocationID < other_sub_id ? dst_a : dst_b;
+}
+
+bool is_thread_active(int i, ivec2 coord)
+{
+    if (i > wavelet_depth - 1)
+        return false;
+    ivec2 mask = ivec2((1 << i) - 1);
+    if (any(notEqual(coord & mask, ivec2(0))))
+        return false;
+    return true;
+}
+
+void main() {
+    ivec2 tile_coord = ivec2(gl_WorkGroupID.xy);
+    ivec2 local_coord = ivec2(gl_LocalInvocationIndex & 7, gl_LocalInvocationIndex >> 3);
+    ivec2 coord = tile_coord * ivec2(TILE_DIM) + local_coord;
+    ivec2 dwt_dim = planes[plane_idx].dwt_dim;
+    if (any(greaterThanEqual(coord, dwt_dim))) {
+        return;
+    }
+    int index = dwt_dim.x * coord.y + coord.x;
+    int value = pbuf[plane_idx].coef_buf[index];
+
+    if (gl_SubgroupSize == 64) {
+        for (int i = 0; i < 3; i++) {
+            if (!is_thread_active(i, local_coord))
+                break;
+            value = dwt_haar_subgroup(value, i);
+        }
+    } else {
+        for (int i = 0; i < 2; i++) {
+            if (!is_thread_active(i, local_coord))
+                break;
+            value = dwt_haar_subgroup(value, i);
+        }
+    }
+ 
+    // Store value
+    pbuf[plane_idx].coef_buf[index] = value;
+}

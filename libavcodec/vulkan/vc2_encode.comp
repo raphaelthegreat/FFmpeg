@@ -1,0 +1,173 @@
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_debug_printf : require
+
+#define MAX_DWT_LEVELS (5)
+
+struct SliceArgs {
+    int quant_idx;
+    int bytes;
+    int pb_start;
+    int pad;
+};
+
+struct Plane {
+    ivec2 dim;
+    ivec2 dwt_dim;
+};
+
+layout(std430, buffer_reference, buffer_reference_align = 16) buffer SliceArgBuf {
+    SliceArgs args[];
+};
+layout(scalar, buffer_reference, buffer_reference_align = 1) buffer BitBuf {
+    uint data[];
+};
+layout(scalar, buffer_reference, buffer_reference_align = 4) buffer QuantLuts {
+    int quant[5][4];
+    int ff_dirac_qscale_tab[116];
+};
+
+layout(push_constant, scalar) uniform ComputeInfo {
+    BitBuf bytestream;
+    QuantLuts luts;
+    SliceArgBuf slice;
+    ivec2 num_slices;
+    Plane planes[3];
+    int wavelet_depth;
+    int size_scaler;
+    int prefix_bytes;
+};
+
+void put_vc2_ue_uint(inout PutBitContext pb, uint val)
+{
+    int pbits = 0, topbit = 1, maxval = 1, bits = 0;
+    if (val == 0)
+    {
+        put_bits(pb, 1, 1);
+        return;
+    }
+    val++;
+
+    while (val > maxval)
+    {
+        topbit <<= 1;
+        bits++;
+        maxval <<= 1;
+        maxval |=  1;
+    }
+
+    for (int i = 0; i < bits; i++)
+    {
+        topbit >>= 1;
+        pbits <<= 2;
+        if ((val & topbit) != 0)
+            pbits |= 1;
+    }
+
+    put_bits(pb, bits * 2 + 1, (pbits << 1) | 1);
+}
+
+int quants[MAX_DWT_LEVELS][4];
+
+int subband_coord(int index, int h, int lvl)
+{
+    int coord = index;
+    coord <<= 1;
+    coord |= h;
+    coord <<= (wavelet_depth-lvl-1);
+    return coord;
+}
+
+void main()
+{
+    int slice_index = int(gl_GlobalInvocationID.x);
+    int max_index = num_slices.x * num_slices.y;
+    if (slice_index >= max_index)
+        return;
+
+    /* Step 2. Quantize and encode */
+    int pb_start = slice.args[slice_index].pb_start;
+    int workgroup_x = int(gl_WorkGroupSize.x);
+    for (int i = 0, index = workgroup_x - 1; i < gl_WorkGroupID.x; i++) {
+        pb_start += slice.args[index].pb_start + slice.args[index].bytes;
+        index += workgroup_x;
+    }
+    ivec2 slice_coord = ivec2(slice_index % num_slices.x, slice_index / num_slices.x);
+    int slice_bytes_max = slice.args[slice_index].bytes;
+    int quant_index = slice.args[slice_index].quant_idx;
+
+    PutBitContext pb;
+    init_put_bits(pb, OFFBUF(u8buf, bytestream, pb_start), slice_bytes_max);
+
+    for (int level = 0; level < wavelet_depth; level++)
+        for (int orientation = int(level > 0); orientation < 4; orientation++)
+            quants[level][orientation] = max(quant_index - luts.quant[level][orientation], 0);
+
+    /* Write quant index for this slice */
+    put_bits(pb, 8, quant_index);
+
+    /* Luma + 2 Chroma planes */
+    for (int p = 0; p < 3; p++)
+    {
+        int pad_s, pad_c;
+        int bytes_start = put_bytes_count(pb);
+
+        /* Save current location and write a zero value */
+        uint64_t write_ptr_start = pb.buf;
+        int bit_left_start = pb.bit_left;
+        put_bits(pb, 8, 0);
+
+        int stride = align(planes[p].dwt_dim.x, 32);
+        for (int level = 0; level < wavelet_depth; level++)
+        {
+            ivec2 band_size = planes[p].dwt_dim >> (wavelet_depth - level);
+            for (int o = int(level > 0); o < 4; o++)
+            {
+                /* Encode subband */
+                int left = band_size.x * (slice_coord.x) / num_slices.x;
+                int right = band_size.x * (slice_coord.x+1) / num_slices.x;
+                int top = band_size.y * (slice_coord.y) / num_slices.y;
+                int bottom = band_size.y * (slice_coord.y+1) / num_slices.y;
+
+                const int q_idx = quants[level][o];
+                const int qfactor = luts.ff_dirac_qscale_tab[q_idx];
+
+                const int yh = o >> 1;
+                const int xh = o & 1;
+
+                for (int y = top; y < bottom; y++)
+                {
+                    for (int x = left; x < right; x++)
+                    {
+                        int sx = subband_coord(x, xh, level);
+                        int sy = subband_coord(y, yh, level);
+                        int coef = imageLoad(planes0[p], ivec2(sx, sy)).x;
+                        uint c_abs = uint(abs(coef));
+                        c_abs = (c_abs << 2) / qfactor;
+                        put_vc2_ue_uint(pb, c_abs);
+                        if (c_abs != 0)
+                            put_bits(pb, 1, int(coef < 0));
+                    }
+                }
+            }
+        }
+        flush_put_bits(pb);
+        int bytes_len = put_bytes_count(pb) - bytes_start - 1;
+        if (p == 2)
+        {
+            int len_diff = slice_bytes_max - put_bytes_count(pb);
+            pad_s = align((bytes_len + len_diff), size_scaler)/size_scaler;
+            pad_c = (pad_s*size_scaler) - bytes_len;
+        }
+        else
+        {
+            pad_s = align(bytes_len, size_scaler)/size_scaler;
+            pad_c = (pad_s*size_scaler) - bytes_len;
+        }
+        uint64_t start_ptr = write_ptr_start + ((BUF_BITS - bit_left_start) >> 3);
+        u8buf(start_ptr).v = uint8_t(pad_s);
+        /* vc2-reference uses that padding that decodes to '0' coeffs */
+        skip_put_bytes(pb, pad_c);
+    }
+}
