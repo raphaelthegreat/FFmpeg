@@ -1,0 +1,66 @@
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_buffer_reference : require
+
+struct Plane {
+    ivec2 dim;
+    ivec2 dwt_dim;
+};
+
+layout(push_constant, scalar) uniform ComputeInfo {
+    int s;
+    int diff_offset;
+    int level;
+    Plane planes[3];
+};
+
+int image_load(int coord_x)
+{
+    int coord_y = int(gl_GlobalInvocationID.x);
+    return imageLoad(planes0[gl_GlobalInvocationID.z], ivec2(coord_x, coord_y)).x;
+}
+
+void image_store(int coord_x, int value)
+{
+    int coord_y = int(gl_GlobalInvocationID.x);
+    imageStore(planes0[gl_GlobalInvocationID.z], ivec2(coord_x, coord_y), ivec4(value));
+}
+
+void main()
+{
+    int coord_y = int(gl_GlobalInvocationID.x);
+    uint plane_idx = gl_GlobalInvocationID.z;
+    ivec2 work_area = planes[plane_idx].dwt_dim;
+    int dist = 1 << level;
+    if (coord_y >= work_area.y || (coord_y & (dist - 1)) != 0)
+        return;
+    
+    // Shift in one bit that is used for additional precision
+    for (int x = 0; x < work_area.x; x += dist)
+        image_store(x, image_load(x) << 1);
+
+    // Lifting stage 2
+    for (int x = 0; x < work_area.x - 2 * dist; x += 2 * dist) {
+        int lhs = image_load(x);
+        int rhs = image_load(x + 2 * dist);
+        int value = image_load(x + dist);
+        value -= (lhs + rhs + 1) >> 1;
+        image_store(x + dist, value);
+    }
+    int lhs = image_load(work_area.x - 2 * dist);
+    int value = image_load(work_area.x - dist);
+    value -= (2 * lhs + 1) >> 1;
+    image_store(work_area.x - dist, value);
+
+    // Lifting stage 1
+    lhs = image_load(dist);
+    value = image_load(0);
+    value += (2 * lhs + 2) >> 2;
+    image_store(0, value);
+    for (int x = 2 * dist; x <= work_area.x - 2 * dist; x += 2 * dist) {
+        int lhs = image_load(x - dist);
+        int rhs = image_load(x + dist);
+        int value = image_load(x);
+        value += (lhs + rhs + 2) >> 2;
+        image_store(x, value);
+    }
+}
