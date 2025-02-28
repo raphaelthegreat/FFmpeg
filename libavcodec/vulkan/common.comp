@@ -18,6 +18,9 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference2 : require
+
 layout(buffer_reference, buffer_reference_align = 1) buffer u8buf {
     uint8_t v;
 };
@@ -61,22 +64,20 @@ layout(buffer_reference, buffer_reference_align = 8) buffer u64buf {
 #define mid_pred(a, b, c) \
     max(min((a), (b)), min(max((a), (b)), (c)))
 
-/* TODO: optimize */
+
 uint align(uint src, uint a)
 {
-    uint res = src % a;
-    if (res == 0)
-        return src;
-    return src + a - res;
+    return (src + a - 1) & ~(a - 1);
 }
 
-/* TODO: optimize */
+int align(int src, int a)
+{
+    return (src + a - 1) & ~(a - 1);
+}
+
 uint64_t align64(uint64_t src, uint64_t a)
 {
-    uint64_t res = src % a;
-    if (res == 0)
-        return src;
-    return src + a - res;
+    return (src + a - 1) & ~(a - 1);
 }
 
 #define reverse4(src) \
@@ -117,6 +118,36 @@ struct PutBitContext {
 };
 
 void put_bits(inout PutBitContext pb, const uint32_t n, uint32_t value)
+{
+    if (n < pb.bit_left) {
+        pb.bit_buf = (pb.bit_buf << n) | value;
+        pb.bit_left -= uint8_t(n);
+    } else {
+        pb.bit_buf <<= pb.bit_left;
+        pb.bit_buf |= (value >> (n - pb.bit_left));
+
+#ifdef PB_UNALIGNED
+        u8buf bs = u8buf(pb.buf);
+        [[unroll]]
+        for (uint8_t i = uint8_t(0); i < BUF_BYTES; i++)
+            bs[i].v = BYTE_EXTRACT(pb.bit_buf, BUF_BYTES - uint8_t(1) - i);
+#else
+#ifdef DEBUG
+        if ((pb.buf % BUF_BYTES) != 0)
+            debugPrintfEXT("put_bits buffer is not aligned!");
+#endif
+
+        BUF_TYPE bs = BUF_TYPE(pb.buf);
+        bs.v = BUF_REVERSE(pb.bit_buf);
+#endif
+        pb.buf = uint64_t(bs) + BUF_BYTES;
+
+        pb.bit_left += BUF_BITS - uint8_t(n);
+        pb.bit_buf = value;
+    }
+}
+
+void put_bits63(inout PutBitContext pb, const uint32_t n, uint64_t value)
 {
     if (n < pb.bit_left) {
         pb.bit_buf = (pb.bit_buf << n) | value;
