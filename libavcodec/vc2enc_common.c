@@ -308,7 +308,7 @@ static const uint8_t vc2_qm_flat_tab[][4] = {
     { 0,  0,  0,  0}
 };
 
-void ff_vc2_init_quant_matrix(VC2EncContext *s, uint8_t quant[MAX_DWT_LEVELS][4])
+void ff_vc2_init_quant_matrix(VC2EncContext *s, int quant[MAX_DWT_LEVELS][4])
 {
     int level, orientation;
 

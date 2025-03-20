@@ -94,7 +94,7 @@ typedef struct VC2EncContext {
     int profile;
 
     /* Quantization matrix */
-    uint8_t quant[MAX_DWT_LEVELS][4];
+    int quant[MAX_DWT_LEVELS][4];
     int custom_quant_matrix;
 
     /* Division LUT */
@@ -160,7 +160,7 @@ void ff_vc2_write_frame_header(VC2EncContext *s);
 
 void ff_vc2_write_sequence_end(VC2EncContext *s);
 
-void ff_vc2_init_quant_matrix(VC2EncContext *s, uint8_t quant[MAX_DWT_LEVELS][4]);
+void ff_vc2_init_quant_matrix(VC2EncContext *s, int quant[MAX_DWT_LEVELS][4]);
 
 void ff_vc2_encode_frame(VC2EncContext *s, void(*encode_slices)(VC2EncContext*));
 
