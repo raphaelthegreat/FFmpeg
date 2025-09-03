@@ -1,0 +1,264 @@
+/*
+ * This file is part of FFmpeg.
+ *
+ * FFmpeg is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * FFmpeg is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with FFmpeg; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ */
+
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(push_constant, scalar) uniform SliceDataInfo {
+    int plane;
+    int pictures_per_frame;
+    int line_add;
+};
+
+shared i16vec4 coeffs[MAX_MBS_PER_SLICE][BLOCKS_PER_MB][DCTSIZE][DCTSIZE / 4];
+
+#define CONST_BITS  13
+#define PASS1_BITS  1   /* lose a little precision to avoid overflow */
+#define OUT_SHIFT   (PASS1_BITS + 1)
+
+#define FIX_0_541196100 4433  /* FIX(0.541196100) */
+#define FIX_0_765366865 6270 /* FIX(0.765366865) */
+#define FIX_1_847759065 15137 /* FIX(1.847759065) */
+#define FIX_1_175875602 9633 /* FIX(1.175875602) */
+#define FIX_0_298631336 2446 /* FIX(0.298631336) */
+#define FIX_3_072711026 25172 /* FIX(3.072711026) */
+#define FIX_1_501321110 12299 /* FIX(1.501321110) */
+#define FIX_0_899976223 7373 /* FIX(0.899976223) */
+#define FIX_1_961570560 16069 /* FIX(1.961570560) */
+#define FIX_2_053119869 16819 /* FIX(2.053119869) */
+#define FIX_2_562915447 20995 /* FIX(2.562915447) */
+#define FIX_0_390180644 3196 /* FIX(0.390180644) */
+
+#define MULTIPLY(type, var, cons) type(uint32_t(var) * uint32_t(cons))
+#define RIGHT_SHIFT(x, n) ((x) >> (n))
+#define DESCALE(x,n)  RIGHT_SHIFT(int32_t(x) + (1 << ((n) - 1)), n)
+
+void row_fdct(i32vec4 data_lo, i32vec4 data_hi)
+{
+    uint row_idx = gl_LocalInvocationID.x;
+    uint block = gl_LocalInvocationID.y;
+    uint mb = gl_LocalInvocationID.z;
+
+    /* Pass 1: process rows. */
+    /* Note results are scaled up by sqrt(8) compared to a true DCT; */
+    /* furthermore, we scale the results by 2**PASS1_BITS. */
+    int32_t tmp0 = data_lo.x + data_hi.w;
+    int32_t tmp7 = data_lo.x - data_hi.w;
+    int32_t tmp1 = data_lo.y + data_hi.z;
+    int32_t tmp6 = data_lo.y - data_hi.z;
+    int32_t tmp2 = data_lo.z + data_hi.y;
+    int32_t tmp5 = data_lo.z - data_hi.y;
+    int32_t tmp3 = data_lo.w + data_hi.x;
+    int32_t tmp4 = data_lo.w - data_hi.x;
+
+    /* Even part per LL&M figure 1 --- note that published figure is faulty;
+     * rotator "sqrt(2)*c1" should be "sqrt(2)*c6".
+     */
+    int32_t tmp10 = tmp0 + tmp3;
+    int32_t tmp13 = tmp0 - tmp3;
+    int32_t tmp11 = tmp1 + tmp2;
+    int32_t tmp12 = tmp1 - tmp2;
+
+    data_lo.x = (tmp10 + tmp11) * (1 << PASS1_BITS);
+    data_hi.x = (tmp10 - tmp11) * (1 << PASS1_BITS);
+
+    uint32_t z1 = MULTIPLY(uint32_t, tmp12 + tmp13, FIX_0_541196100);
+    data_lo.z = DESCALE(z1 + MULTIPLY(uint32_t, tmp13, FIX_0_765366865), CONST_BITS-PASS1_BITS);
+    data_hi.z = DESCALE(z1 + MULTIPLY(uint32_t, tmp12, -FIX_1_847759065), CONST_BITS-PASS1_BITS);
+
+    /* Odd part per figure 8 --- note paper omits factor of sqrt(2).
+     * cK represents cos(K*pi/16).
+     * i0..i3 in the paper are tmp4..tmp7 here.
+     */
+    z1 = tmp4 + tmp7;
+    uint32_t z2 = tmp5 + tmp6;
+    uint32_t z3 = tmp4 + tmp6;
+    uint32_t z4 = tmp5 + tmp7;
+    uint32_t z5 = (z3 + z4) * FIX_1_175875602; /* sqrt(2) * c3 */
+
+    tmp4 = MULTIPLY(int32_t, tmp4, FIX_0_298631336); /* sqrt(2) * (-c1+c3+c5-c7) */
+    tmp5 = MULTIPLY(int32_t, tmp5, FIX_2_053119869); /* sqrt(2) * ( c1+c3-c5+c7) */
+    tmp6 = MULTIPLY(int32_t, tmp6, FIX_3_072711026); /* sqrt(2) * ( c1+c3+c5-c7) */
+    tmp7 = MULTIPLY(int32_t, tmp7, FIX_1_501321110); /* sqrt(2) * ( c1+c3-c5-c7) */
+    z1 = MULTIPLY(uint32_t, z1, - FIX_0_899976223); /* sqrt(2) * (c7-c3) */
+    z2 = MULTIPLY(uint32_t, z2, - FIX_2_562915447); /* sqrt(2) * (-c1-c3) */
+    z3 = MULTIPLY(uint32_t, z3, - FIX_1_961570560); /* sqrt(2) * (-c3-c5) */
+    z4 = MULTIPLY(uint32_t, z4, - FIX_0_390180644); /* sqrt(2) * (c5-c3) */
+
+    z3 += z5;
+    z4 += z5;
+
+    data_hi.w = DESCALE(uint32_t(tmp4) + z1 + z3, CONST_BITS - PASS1_BITS);
+    data_hi.y = DESCALE(uint32_t(tmp5) + z2 + z4, CONST_BITS - PASS1_BITS);
+    data_lo.w = DESCALE(uint32_t(tmp6) + z2 + z3, CONST_BITS - PASS1_BITS);
+    data_lo.y = DESCALE(uint32_t(tmp7) + z1 + z4, CONST_BITS - PASS1_BITS);
+
+    coeffs[mb][block][row_idx][0] = i16vec4(data_lo);
+    coeffs[mb][block][row_idx][1] = i16vec4(data_hi);
+}
+
+void ff_jpeg_fdct_islow_10()
+{
+    uint col_half = gl_LocalInvocationID.x / 4;
+    uint col = gl_LocalInvocationID.x & 3u;
+    uint block = gl_LocalInvocationID.y;
+    uint mb = gl_LocalInvocationID.z;
+
+    i16vec4 col_lo = i16vec4(coeffs[mb][block][0][col_half][col],
+                             coeffs[mb][block][1][col_half][col],
+                             coeffs[mb][block][2][col_half][col],
+                             coeffs[mb][block][3][col_half][col]);
+    i16vec4 col_hi = i16vec4(coeffs[mb][block][4][col_half][col],
+                             coeffs[mb][block][5][col_half][col],
+                             coeffs[mb][block][6][col_half][col],
+                             coeffs[mb][block][7][col_half][col]);
+    i32vec4 data_lo = i32vec4(col_lo);
+    i32vec4 data_hi = i32vec4(col_hi);
+
+    /* Pass 2: process columns.
+     * We remove the PASS1_BITS scaling, but leave the results scaled up
+     * by an overall factor of 8.
+     */
+    int32_t tmp0 = data_lo.x + data_hi.w;
+    int32_t tmp7 = data_lo.x - data_hi.w;
+    int32_t tmp1 = data_lo.y + data_hi.z;
+    int32_t tmp6 = data_lo.y - data_hi.z;
+    int32_t tmp2 = data_lo.z + data_hi.y;
+    int32_t tmp5 = data_lo.z - data_hi.y;
+    int32_t tmp3 = data_lo.w + data_hi.x;
+    int32_t tmp4 = data_lo.w - data_hi.x;
+
+    /* Even part per LL&M figure 1 --- note that published figure is faulty;
+     * rotator "sqrt(2)*c1" should be "sqrt(2)*c6".
+     */
+    int32_t tmp10 = tmp0 + tmp3;
+    int32_t tmp13 = tmp0 - tmp3;
+    int32_t tmp11 = tmp1 + tmp2;
+    int32_t tmp12 = tmp1 - tmp2;
+
+    data_lo.x = DESCALE(tmp10 + tmp11, OUT_SHIFT);
+    data_hi.x = DESCALE(tmp10 - tmp11, OUT_SHIFT);
+
+    uint32_t z1 = uint32_t((tmp12 + tmp13) * FIX_0_541196100);
+    data_lo.z = DESCALE(z1 + uint32_t(tmp13 * FIX_0_765366865), CONST_BITS + OUT_SHIFT);
+    data_hi.z = DESCALE(z1 + uint32_t(tmp12 * (-FIX_1_847759065)), CONST_BITS + OUT_SHIFT);
+
+    /* Odd part per figure 8 --- note paper omits factor of sqrt(2).
+     * cK represents cos(K*pi/16).
+     * i0..i3 in the paper are tmp4..tmp7 here.
+     */
+    z1 = tmp4 + tmp7;
+    uint32_t z2 = tmp5 + tmp6;
+    uint32_t z3 = tmp4 + tmp6;
+    uint32_t z4 = tmp5 + tmp7;
+    uint32_t z5 = MULTIPLY(uint32_t, z3 + z4, FIX_1_175875602); /* sqrt(2) * c3 */
+
+    tmp4 = MULTIPLY(int32_t, tmp4, FIX_0_298631336); /* sqrt(2) * (-c1+c3+c5-c7) */
+    tmp5 = MULTIPLY(int32_t, tmp5, FIX_2_053119869); /* sqrt(2) * ( c1+c3-c5+c7) */
+    tmp6 = MULTIPLY(int32_t, tmp6, FIX_3_072711026); /* sqrt(2) * ( c1+c3+c5-c7) */
+    tmp7 = MULTIPLY(int32_t, tmp7, FIX_1_501321110); /* sqrt(2) * ( c1+c3-c5-c7) */
+    z1 = MULTIPLY(uint32_t, z1, - FIX_0_899976223); /* sqrt(2) * (c7-c3) */
+    z2 = MULTIPLY(uint32_t, z2, - FIX_2_562915447); /* sqrt(2) * (-c1-c3) */
+    z3 = MULTIPLY(uint32_t, z3, - FIX_1_961570560); /* sqrt(2) * (-c3-c5) */
+    z4 = MULTIPLY(uint32_t, z4, - FIX_0_390180644); /* sqrt(2) * (c5-c3) */
+
+    z3 += z5;
+    z4 += z5;
+
+    data_hi.w = DESCALE(tmp4 + z1 + z3, CONST_BITS + OUT_SHIFT);
+    data_hi.y = DESCALE(tmp5 + z2 + z4, CONST_BITS + OUT_SHIFT);
+    data_lo.w = DESCALE(tmp6 + z2 + z3, CONST_BITS + OUT_SHIFT);
+    data_lo.y = DESCALE(tmp7 + z1 + z4, CONST_BITS + OUT_SHIFT);
+
+    col_lo = i16vec4(data_lo);
+    col_hi = i16vec4(data_hi);
+    coeffs[mb][block][0][col_half][col] = col_lo.x;
+    coeffs[mb][block][1][col_half][col] = col_lo.y;
+    coeffs[mb][block][2][col_half][col] = col_lo.z;
+    coeffs[mb][block][3][col_half][col] = col_lo.w;
+    coeffs[mb][block][4][col_half][col] = col_hi.x;
+    coeffs[mb][block][5][col_half][col] = col_hi.y;
+    coeffs[mb][block][6][col_half][col] = col_hi.z;
+    coeffs[mb][block][7][col_half][col] = col_hi.w;
+}
+
+/* Table of possible edge slice configurations */
+const uvec3 edge_mps_table[8] = uvec3[](
+    uvec3(0, 0, 0),
+    uvec3(1, 0, 0),
+    uvec3(2, 0, 0),
+    uvec3(2, 1, 0),
+    uvec3(4, 0, 0),
+    uvec3(4, 1, 0),
+    uvec3(4, 2, 0),
+    uvec3(4, 2, 1)
+);
+
+void main()
+{
+    bool is_chroma = plane == 1 || plane == 2;
+    uint row_idx = gl_LocalInvocationID.x;
+    uint block = gl_LocalInvocationID.y;
+    uint macroblock = gl_LocalInvocationID.z;
+    uint slice_x = gl_WorkGroupID.x;
+
+    /* Calculate the current thread coordinate in input plane */
+    uint mbs_per_slice = MAX_MBS_PER_SLICE;
+    uint mb_width = 4u * BLOCKS_PER_MB;
+    uint slices_width = WIDTH_IN_MB / MAX_MBS_PER_SLICE;
+    uvec2 slice_base = gl_WorkGroupID.xy * uvec2(MAX_MBS_PER_SLICE * mb_width, DCTSIZE * 2u);
+
+    /* Handle slice macroblock size reduction on edge slices */
+    if (slice_x >= slices_width) {
+        uint edge_slice = slice_x - slices_width;
+        uvec3 table = edge_mps_table[WIDTH_IN_MB - slices_width * MAX_MBS_PER_SLICE];
+        uvec3 base = uvec3(0u, table.x, table.x + table.y);
+        slice_base.x = (MAX_MBS_PER_SLICE * slices_width + base[edge_slice]) * mb_width;
+        mbs_per_slice = table[edge_slice];
+    }
+
+    uvec2 mb_base = slice_base + uvec2(macroblock * mb_width, 0u);
+    uvec2 block_coord = is_chroma ? uvec2(block >> 1u, block & 1u) : uvec2(block & 1u, block >> 1u);
+    ivec2 coord = ivec2(mb_base + block_coord * DCTSIZE + uvec2(0u, row_idx));
+    ivec2 size = textureSize(planes[plane], 0);
+    coord.y = coord.y * pictures_per_frame + line_add;
+    coord = min(coord, size - ivec2(1));
+
+    /* Load coefficients from input planes */
+    i32vec4 row_lo;
+    row_lo.x = texelFetchOffset(planes[plane], coord, 0, ivec2(0, 0)).x;
+    row_lo.y = texelFetchOffset(planes[plane], coord, 0, ivec2(1, 0)).x;
+    row_lo.z = texelFetchOffset(planes[plane], coord, 0, ivec2(2, 0)).x;
+    row_lo.w = texelFetchOffset(planes[plane], coord, 0, ivec2(3, 0)).x;
+    
+    i32vec4 row_hi;
+    row_hi.x = texelFetchOffset(planes[plane], coord, 0, ivec2(4, 0)).x;
+    row_hi.y = texelFetchOffset(planes[plane], coord, 0, ivec2(5, 0)).x;
+    row_hi.z = texelFetchOffset(planes[plane], coord, 0, ivec2(6, 0)).x;
+    row_hi.w = texelFetchOffset(planes[plane], coord, 0, ivec2(7, 0)).x;
+
+    /* Perform DCT on the coefficients */
+    row_fdct(row_lo, row_hi);
+    ff_jpeg_fdct_islow_10();
+    barrier();
+
+    /* Store DCT result to slice buffer */
+    uint slice = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    uint slice_row = macroblock * BLOCKS_PER_MB * DCTSIZE + block * DCTSIZE + row_idx;
+    slices[slice].mbs_per_slice = mbs_per_slice;
+    slices[slice].rows[plane][slice_row] = coeffs[macroblock][block][row_idx];
+}

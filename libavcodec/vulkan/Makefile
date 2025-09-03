@@ -9,6 +9,13 @@ OBJS-$(CONFIG_FFV1_VULKAN_ENCODER)  +=  vulkan/common.o \
 					vulkan/ffv1_enc_rct.o vulkan/ffv1_enc_setup.o \
 					vulkan/ffv1_rct_search.o vulkan/ffv1_enc.o
 
+OBJS-$(CONFIG_PRORES_KS_VULKAN_ENCODER) += vulkan/common.o \
+					vulkan/prores_ks_alpha_data.o \
+					vulkan/prores_ks_slice_data.o \
+					vulkan/prores_ks_estimate_slice.o \
+					vulkan/prores_ks_encode_slice.o \
+					vulkan/prores_ks_trellis_node.o
+
 OBJS-$(CONFIG_FFV1_VULKAN_HWACCEL)  +=  vulkan/common.o \
 					vulkan/rangecoder.o vulkan/ffv1_vlc.o \
 					vulkan/ffv1_common.o vulkan/ffv1_reset.o \

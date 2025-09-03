@@ -310,7 +310,7 @@ av_cold int ff_prores_kostya_encode_init(AVCodecContext *avctx, ProresContext *c
     return 0;
 }
 
-uint8_t* ff_prores_kostya_write_frame_header(AVCodecContext *avctx, ProresContext *ctx,
+uint8_t *ff_prores_kostya_write_frame_header(AVCodecContext *avctx, ProresContext *ctx,
                                              uint8_t **orig_buf, int flags,
                                              enum AVColorPrimaries color_primaries,
                                              enum AVColorTransferCharacteristic color_trc,
@@ -354,7 +354,7 @@ uint8_t* ff_prores_kostya_write_frame_header(AVCodecContext *avctx, ProresContex
     return buf;
 }
 
-uint8_t* ff_prores_kostya_write_picture_header(ProresContext *ctx, uint8_t *buf)
+uint8_t *ff_prores_kostya_write_picture_header(ProresContext *ctx, uint8_t *buf)
 {
     bytestream_put_byte  (&buf, 0x40); // picture header size (in bits)
     buf += 4;                                   // picture data size will be stored here
