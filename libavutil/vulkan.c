@@ -2507,7 +2507,8 @@ print:
         GLSLA("layout (set = %i, binding = %i", FFMAX(shd->nb_descriptor_sets - 1, 0), i);
 
         if (desc[i].mem_layout &&
-            (desc[i].type != VK_DESCRIPTOR_TYPE_STORAGE_IMAGE))
+            (desc[i].type != VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) &&
+            (desc[i].type != VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE))
             GLSLA(", %s", desc[i].mem_layout);
 
         GLSLA(")");
@@ -2520,7 +2521,7 @@ print:
 
         if (prop->type) {
             GLSLA(" ");
-            if (desc[i].type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
+            if (desc[i].type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE || desc[i].type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) {
                 if (desc[i].mem_layout) {
                     int len = strlen(desc[i].mem_layout);
                     if (desc[i].mem_layout[len - 1] == 'i' &&
